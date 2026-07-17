@@ -119,14 +119,23 @@ flowchart LR
 1. The first-party application receives fictional automotive-sales text.
 2. Presidio Analyzer runs locally and returns entity type, offsets, and confidence.
 3. A local policy decides whether each entity is blocked, hashed, masked, or tokenized.
-4. `model_boundary.py` constructs the only payload the model adapter can receive.
+4. `model_boundary.py` constructs the only payload a provider-facing model adapter can receive.
 5. The boundary scans the payload and fails closed if known raw PII or forbidden fields remain.
 6. A mock model is the default. Optional LiteLLM or Azure OpenAI calls require explicit environment configuration.
-7. Hashes remain hashes. Tokens are restored only by the local composer after session ownership is verified.
+7. Hashes remain hashes. Tokens are restored only by the local composer after simulated session ownership is verified.
+
+There are two explicit request contracts:
+
+- `InboundUserRequest` may contain raw PII. It is accepted only by the first-party application or the local LiteLLM gateway and may be passed only to local Presidio processing.
+- `SafeModelRequest` contains only transformed text and allowlisted analytical fields. It is the only request type accepted by provider-facing adapters.
+
+The LiteLLM tutorial path is a special local-gateway integration. The local LiteLLM process receives `InboundUserRequest`, invokes the local Presidio pre-call guardrail, and only then calls its configured upstream. An integration test uses a local capture server as the upstream provider and asserts that the captured outbound request is masked. Raw PII is therefore permitted inside the named first-party gateway process but not beyond it. The custom Python path converts `InboundUserRequest` to `SafeModelRequest` before invoking any model adapter.
+
+Authentication is deliberately simulated rather than implemented. The demo creates a trusted `SessionContext` containing `owner_id`, `session_id`, and `issued_at`. Tests and command-line examples inject this context directly. The token vault binds every token map to that context and rejects a different or expired context. A production application would construct the same context only after verifying its real identity token or session cookie.
 
 ### 6.2 Automotive database path
 
-The first database is SQLite populated entirely with synthetic data. The schema represents twelve months of vehicle sales and includes fictional dealer, salesperson, customer, vehicle, sale date, unit price, and margin fields.
+The first database is SQLite populated entirely with synthetic data. The schema represents vehicle sales from 2025-07-01 through 2026-06-30 and includes fictional dealer, salesperson, customer, vehicle, sale date, unit price, and margin fields.
 
 The LLM never receives a database connection, SQL tool, hostname, private IP, credentials, schema dump, or row-level result.
 
@@ -141,6 +150,8 @@ The data flow is:
 7. The first-party composer inserts exact totals locally and combines the narrative with the local table.
 
 This design allows the user to receive an exact answer while the external LLM never receives the exact monthly totals.
+
+The demo defines "previous twelve complete months" relative to an injectable `as_of` value and the `Australia/Sydney` timezone. The documented demo uses `as_of=2026-07-17`, producing the fixed period 2025-07 through 2026-06. Tests always supply this value explicitly; production adapters may supply the current trusted application clock.
 
 ## 7. Transformation modes
 
@@ -187,13 +198,13 @@ Tokens are random, scoped to one session, expire after a short TTL, and are not 
 
 ## 8. Model boundary contract
 
-Every model adapter accepts one `SafeModelRequest` object. It cannot accept database connections, arbitrary dictionaries, ORM rows, or application request objects.
+Every provider-facing model adapter accepts one `SafeModelRequest` object. It cannot accept database connections, arbitrary dictionaries, ORM rows, `InboundUserRequest`, or application request objects. The local LiteLLM gateway is not a provider-facing adapter: it is a named first-party processor whose responsibility is to convert raw inbound text into a masked outbound provider request.
 
 Allowed fields:
 
 - System instruction selected from repository-owned templates.
 - Redacted or tokenized user text.
-- Approved automotive analytical features.
+- The closed automotive analytical schema defined below.
 - Non-sensitive month labels.
 - Opaque placeholders for confidential exact values.
 
@@ -208,13 +219,49 @@ Forbidden fields:
 
 The boundary serializes its final payload in tests so leakage assertions operate on the exact bytes that would be transmitted.
 
+### 8.1 Closed automotive outbound schema
+
+The automotive model payload is a typed `AutomotiveNarrativeFacts` object with no extra fields permitted:
+
+| Field | Type | Permitted values |
+|---|---|---|
+| `period_start` | String | `YYYY-MM`; demo value `2025-07` |
+| `period_end` | String | `YYYY-MM`; demo value `2026-06` |
+| `monthly_direction_sequence` | Array of 11 strings | `UP`, `DOWN`, or `FLAT` |
+| `peak_month` | String | One month within the analysis period |
+| `trough_month` | String | One month within the analysis period |
+| `quarter_direction_sequence` | Array of 3 strings | `UP`, `DOWN`, or `FLAT` |
+| `volatility_band` | String | `LOW`, `MODERATE`, or `HIGH` |
+| `overall_trend` | String | `GROWING`, `DECLINING`, or `MIXED` |
+| `data_quality_flags` | Array of strings | `NONE`, `MISSING_MONTH`, or `DUPLICATE_RECORDS` |
+| `allowed_placeholders` | Array of strings | Values from the placeholder registry below |
+
+The schema permits no free-form metadata, identifiers, counts, currency values, percentages, database fields, or nested source records. Unknown fields and unknown enum values are validation errors.
+
+### 8.2 Model response grammar and placeholder registry
+
+The model returns a typed `NarrativeTemplate`:
+
+- `headline`: plain text with no placeholders and no digits.
+- `observations`: one to four plain-text sentences.
+- `caveat`: optional plain text selected only when data-quality flags are present.
+
+The only placeholders permitted inside `observations` are:
+
+- `{{PEAK_MONTH_TOTAL}}`
+- `{{TROUGH_MONTH_TOTAL}}`
+- `{{PERIOD_START_TOTAL}}`
+- `{{PERIOD_END_TOTAL}}`
+
+The local response validator rejects unknown placeholders, digits in the model response, and placeholders that were not listed in the request's `allowed_placeholders`. The local composer owns the placeholder-to-exact-value mapping and substitutes values only after response validation. This keeps exact totals out of both the model request and response while allowing the final first-party response to contain them.
+
 ## 9. Error handling
 
 - Presidio unavailable: fail closed and do not call the model.
 - Detection confidence below policy threshold: mark for review or block high-risk categories.
 - Credit card, bank, tax, Medicare, or licence data: block by default rather than hash.
 - Missing or expired token: do not rehydrate; return a safe error.
-- Wrong session owner: deny access and leave tokens unresolved.
+- Wrong simulated session owner: deny access and leave tokens unresolved.
 - Database query failure: return no model narrative because there is no verified fact set.
 - Empty or incomplete twelve-month result: surface a data-quality warning and do not infer missing values.
 - Outbound contract violation: fail closed, record only the forbidden field name, and never log its value.
@@ -235,12 +282,13 @@ The boundary serializes its final payload in tests so leakage assertions operate
 
 ### Automotive integration tests
 
-- The synthetic database query returns exactly twelve ordered months.
+- With `as_of=2026-07-17` and timezone `Australia/Sydney`, the synthetic database query returns exactly twelve ordered months from 2025-07 through 2026-06.
 - Monthly totals match independently calculated fixture values.
 - No row-level record appears in the outbound model payload.
 - No exact monthly total appears in the outbound model payload.
 - No database filename, hostname, private IP, connection string, SQL statement, VIN, customer ID, or salesperson ID appears in the outbound payload.
 - The model receives only approved trend features and placeholders.
+- Unknown outbound feature fields, enum values, response placeholders, response digits, and unrequested placeholders are rejected.
 - The local composer inserts exact values only after the model returns.
 - The final user response contains the exact table and a coherent narrative.
 
@@ -317,4 +365,3 @@ The design is complete when a new learner can clone the public repository and:
 - Presidio current hash operator: <https://github.com/data-privacy-stack/presidio/blob/517d13eee659794ed3a55d188752d014be574c2a/presidio-anonymizer/presidio_anonymizer/operators/hash.py>
 - Presidio anonymizer documentation: <https://data-privacy-stack.github.io/presidio/anonymizer/>
 - LiteLLM March 2026 supply-chain incident: <https://github.com/BerriAI/litellm/issues/24518>
-
