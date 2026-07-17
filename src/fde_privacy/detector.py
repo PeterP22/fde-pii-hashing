@@ -74,7 +74,7 @@ def detect_pii(text: str) -> tuple[DetectedEntity, ...]:
         for detection in detections
         if detection in owned_customer_ids
         or not any(
-            detection.start < customer_id.end and customer_id.start < detection.end
+            customer_id.start <= detection.start and detection.end <= customer_id.end
             for customer_id in owned_customer_ids
         )
     )

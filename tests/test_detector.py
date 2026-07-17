@@ -1,6 +1,7 @@
 from dataclasses import FrozenInstanceError, fields
 
 import pytest
+from presidio_analyzer import RecognizerResult
 
 from fde_privacy.detector import DetectedEntity, detect_pii, get_analyzer
 from fde_privacy.policy import PiiAction, PolicyDecision, decide_policy
@@ -181,4 +182,33 @@ def test_non_customer_ambiguous_overlaps_remain_fail_closed() -> None:
         decide_policy(detection.entity_type, detection.score)
         == PolicyDecision(PiiAction.BLOCK, needs_review=True)
         for detection in overlapping_urls
+    )
+
+
+def test_customer_id_suppresses_only_fully_contained_overlaps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = "Alice CUST-000123 Bob"
+
+    class StubAnalyzer:
+        def analyze(self, *, text: str, language: str) -> list[RecognizerResult]:
+            assert text == "Alice CUST-000123 Bob"
+            assert language == "en"
+            return [
+                RecognizerResult("PERSON", 0, 17, 0.85),
+                RecognizerResult("CUSTOMER_ID", 6, 17, 0.95),
+                RecognizerResult("US_DRIVER_LICENSE", 11, 17, 0.01),
+                RecognizerResult("PERSON", 18, 21, 0.85),
+            ]
+
+    monkeypatch.setattr("fde_privacy.detector.get_analyzer", lambda: StubAnalyzer())
+
+    detections = detect_pii(text)
+
+    assert tuple(
+        (detection.entity_type, detection.start, detection.end) for detection in detections
+    ) == (
+        ("PERSON", 0, 17),
+        ("CUSTOMER_ID", 6, 17),
+        ("PERSON", 18, 21),
     )
