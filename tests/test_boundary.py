@@ -12,6 +12,17 @@ from fde_privacy.model_adapters import CapturingMockAdapter, ModelAdapter
 
 SAFE_HASH = "a" * 20 + "12345" + "a" * 39
 SAFE_TOKEN = "{{EMAIL_ADDRESS:123456789012345678901234}}"
+DATABASE_FILE_PROBES = (
+    "customer.db",
+    "customer.sqlite",
+    "customer.sqlite3",
+    "data/customer.db",
+    "data/customer.sqlite",
+    r"data\customer.sqlite3",
+    "<PERSON>_customer.db",
+    "<PERSON>_data/customer.sqlite3",
+    r"<PERSON>_data\customer.sqlite",
+)
 
 
 def safe_request_text() -> str:
@@ -111,6 +122,25 @@ def test_recursive_serialized_value_checks_use_same_database_boundaries(
     assert boundary_module._inspect_serialized({"allowed": [{"content": unsafe_value}]}) is not None
 
 
+@pytest.mark.parametrize("unsafe_path", DATABASE_FILE_PROBES)
+def test_database_checks_reject_bare_and_relative_database_files(unsafe_path: str) -> None:
+    with pytest.raises(BoundaryViolation, match="database location") as error:
+        build_safe_request(
+            safe_text=unsafe_path,
+            system_prompt_id=SystemPromptId.PII_SUMMARY,
+        )
+
+    assert unsafe_path not in "".join(format_exception(error.value))
+
+
+@pytest.mark.parametrize("unsafe_path", DATABASE_FILE_PROBES)
+def test_recursive_checks_reject_bare_and_relative_database_files(unsafe_path: str) -> None:
+    assert boundary_module._inspect_serialized({"allowed": [{"content": unsafe_path}]}) == (
+        "category",
+        "database location",
+    )
+
+
 def test_database_checks_do_not_match_substrings_inside_alphanumeric_words(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -127,6 +157,29 @@ def test_database_checks_do_not_match_substrings_inside_alphanumeric_words(
 
     assert request.safe_text == text
     assert boundary_module._inspect_serialized({"allowed": [{"content": text}]}) is None
+
+
+@pytest.mark.parametrize(
+    "safe_text",
+    [
+        "customer.dbexample",
+        "data/customer.sqlitebackup",
+        r"data\customer.sqlite3example",
+        "The customer discussed report.txt, image.jpeg, and archive.tar.gz.",
+    ],
+)
+def test_database_file_checks_allow_extension_superstrings_and_unrelated_files(
+    safe_text: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(boundary_module, "detect_pii", lambda _: ())
+
+    request = build_safe_request(
+        safe_text=safe_text,
+        system_prompt_id=SystemPromptId.PII_SUMMARY,
+    )
+
+    assert request.safe_text == safe_text
+    assert boundary_module._inspect_serialized({"allowed": [{"content": safe_text}]}) is None
 
 
 @pytest.mark.parametrize(

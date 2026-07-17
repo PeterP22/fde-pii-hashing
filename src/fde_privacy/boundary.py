@@ -88,6 +88,11 @@ _DATABASE_LOCATION_PATTERNS: Final[tuple[Pattern[str], ...]] = (
         r"(?:postgresql|mysql)(?:\\[^\s]*)?)",
         IGNORECASE,
     ),
+    compile_regex(
+        r"(?<![A-Za-z0-9])(?:[A-Za-z0-9._-]+[\\/])*[A-Za-z0-9._-]+"
+        r"\.(?:db|sqlite(?:3)?)(?![A-Za-z0-9])",
+        IGNORECASE,
+    ),
 )
 _FORBIDDEN_FIELD_NAMES: Final[tuple[str, ...]] = (
     "database_url",
