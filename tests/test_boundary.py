@@ -1,4 +1,5 @@
 from inspect import signature
+from time import perf_counter
 from traceback import format_exception
 
 import pytest
@@ -30,6 +31,48 @@ def safe_request_text() -> str:
         f"Customer {SAFE_TOKEN} had identifier {SAFE_HASH}; "
         "contact is <PHONE_NUMBER>. The vehicle needs routine service."
     )
+
+
+def test_safe_text_length_limit_accepts_exactly_twenty_thousand_and_rejects_one_over(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    detector_inputs: list[str] = []
+
+    def record_detector_input(value: str) -> tuple[DetectedEntity, ...]:
+        detector_inputs.append(value)
+        return ()
+
+    monkeypatch.setattr(boundary_module, "detect_pii", record_detector_input)
+    at_limit = "z" * 20_000
+    over_limit = "z" * 20_001
+
+    request = build_safe_request(
+        safe_text=at_limit,
+        system_prompt_id=SystemPromptId.PII_SUMMARY,
+    )
+
+    assert request.safe_text == at_limit
+    assert detector_inputs == [at_limit, at_limit]
+
+    with pytest.raises(BoundaryViolation, match="maximum length") as error:
+        build_safe_request(
+            safe_text=over_limit,
+            system_prompt_id=SystemPromptId.PII_SUMMARY,
+        )
+
+    assert detector_inputs == [at_limit, at_limit]
+    assert over_limit not in "".join(format_exception(error.value))
+
+
+def test_long_nonmatching_slash_input_has_bounded_database_scan_time() -> None:
+    text = "segment/" * 2_000 + "terminal.txt"
+
+    started_at = perf_counter()
+    violation = boundary_module._find_manual_violation(text)
+    elapsed = perf_counter() - started_at
+
+    assert violation is None
+    assert elapsed < 0.5
 
 
 def test_build_safe_request_accepts_representative_composed_output() -> None:
@@ -379,6 +422,97 @@ def test_exact_confidential_value_is_checked_locally_but_not_serialized() -> Non
     formatted = "".join(format_exception(error.value))
     assert str(confidential_total) not in formatted
     assert "exact confidential value" in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("forbidden_total", "formatted_total"),
+    [
+        (125000, "125000"),
+        (125000, "125000.00"),
+        (125000, "$125,000"),
+        (125000, "$125,000.00"),
+        (125000, "AUD 125,000"),
+        (-125000, "-125000"),
+        (-125000, "-125000.00"),
+        (-125000, "-$125,000"),
+        (-125000, "$-125,000.00"),
+        (-125000, "AUD -125,000"),
+        (-125000, "(125,000.00)"),
+    ],
+)
+def test_numeric_exact_values_reject_equivalent_formatted_totals(
+    forbidden_total: int,
+    formatted_total: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(boundary_module, "detect_pii", lambda _: ())
+
+    with pytest.raises(BoundaryViolation, match="exact confidential value") as error:
+        build_safe_request(
+            safe_text=f"The total is {formatted_total}.",
+            system_prompt_id=SystemPromptId.PII_SUMMARY,
+            forbidden_exact_values=(forbidden_total,),
+        )
+
+    assert formatted_total not in "".join(format_exception(error.value))
+
+
+@pytest.mark.parametrize("formatted_total", ["$125,000.00", "AUD 125,000", "125000.00"])
+def test_recursive_serialized_inspection_rejects_formatted_exact_totals(
+    formatted_total: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NestedSerializedRequest:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def model_dump(self, *, mode: str) -> dict[str, object]:
+            assert mode == "json"
+            return {"allowed": [{"content": formatted_total}]}
+
+    monkeypatch.setattr(boundary_module, "detect_pii", lambda _: ())
+    monkeypatch.setattr(boundary_module, "SafeModelRequest", NestedSerializedRequest)
+
+    with pytest.raises(BoundaryViolation, match="exact confidential value") as error:
+        build_safe_request(
+            safe_text="ordinary safe words",
+            system_prompt_id=SystemPromptId.PII_SUMMARY,
+            forbidden_exact_values=(125000,),
+        )
+
+    assert formatted_total not in "".join(format_exception(error.value))
+
+
+def test_numeric_exact_checks_ignore_protected_atoms_months_and_identifiers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    numeric_hash = "a" * 10 + "125000" + "b" * 48
+    numeric_token = "{{PERSON:" + "125000" + "1" * 18 + "}}"
+    text = (
+        f"Digest {numeric_hash}; token {numeric_token}; month 2025-08; "
+        "identifiers order125000 and customer_125000."
+    )
+    monkeypatch.setattr(boundary_module, "detect_pii", lambda _: ())
+
+    request = build_safe_request(
+        safe_text=text,
+        system_prompt_id=SystemPromptId.PII_SUMMARY,
+        forbidden_exact_values=(125000, 2025, 8),
+    )
+
+    assert request.safe_text == text
+
+
+@pytest.mark.parametrize("invalid_numeric", [True, float("nan"), float("inf"), float("-inf")])
+def test_invalid_forbidden_numeric_values_fail_safely(invalid_numeric: object) -> None:
+    with pytest.raises(BoundaryViolation, match="collection is invalid") as error:
+        build_safe_request(
+            safe_text="ordinary safe words",
+            system_prompt_id=SystemPromptId.PII_SUMMARY,
+            forbidden_exact_values=(invalid_numeric,),  # type: ignore[arg-type]
+        )
+
+    assert str(invalid_numeric) not in "".join(format_exception(error.value))
 
 
 def test_exact_check_ignores_values_inside_approved_protected_atoms_and_months(

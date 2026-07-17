@@ -1,6 +1,8 @@
 """Provider-facing request construction with fail-closed local leakage checks."""
 
 from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass
+from decimal import Decimal
 from enum import StrEnum
 from ipaddress import IPv4Address
 from re import IGNORECASE, Pattern, escape, finditer
@@ -36,6 +38,7 @@ SYSTEM_PROMPTS: Final[Mapping[SystemPromptId, str]] = MappingProxyType(
     }
 )
 
+MAX_SAFE_TEXT_LENGTH: Final = 20_000
 _TOKEN_PATTERN: Final[Pattern[str]] = compile_regex(r"\{\{[A-Z][A-Z0-9_]*:[A-Za-z0-9_-]{24}\}\}")
 _MASK_PATTERN: Final[Pattern[str]] = compile_regex(r"<[A-Z][A-Z0-9_]*>")
 _HASH_PATTERN: Final[Pattern[str]] = compile_regex(r"(?<![0-9A-Za-z])[0-9a-f]{64}(?![0-9A-Za-z])")
@@ -69,30 +72,24 @@ _CREDIT_CARD_PATTERN: Final[Pattern[str]] = compile_regex(r"(?<!\d)(?:\d[ -]?){1
 _IPV4_CANDIDATE_PATTERN: Final[Pattern[str]] = compile_regex(
     r"(?<![0-9])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9])"
 )
-_DATABASE_LOCATION_PATTERNS: Final[tuple[Pattern[str], ...]] = (
+_DATABASE_SCHEME_PATTERNS: Final[tuple[Pattern[str], ...]] = (
     compile_regex(
         r"(?<![A-Za-z0-9])(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|"
         r"sqlite)://\S+",
         IGNORECASE,
     ),
     compile_regex(r"(?<![A-Za-z0-9])jdbc:[a-z0-9]+://\S+", IGNORECASE),
-    compile_regex(
-        r"(?<![A-Za-z0-9])(?:/[A-Za-z0-9._-]+)+"
-        r"(?:\.db|\.sqlite[0-9]*|/postgresql|/mysql)"
-        r"(?:/[^\s]*)?",
-        IGNORECASE,
-    ),
-    compile_regex(
-        r"(?<![A-Za-z0-9])[A-Z]:\\(?:[^\\\s]+\\)*"
-        r"(?:[^\\\s]+\.(?:db|sqlite[0-9]*)|"
-        r"(?:postgresql|mysql)(?:\\[^\s]*)?)",
-        IGNORECASE,
-    ),
-    compile_regex(
-        r"(?<![A-Za-z0-9])(?:[A-Za-z0-9._-]+[\\/])*[A-Za-z0-9._-]+"
-        r"\.(?:db|sqlite(?:3)?)(?![A-Za-z0-9])",
-        IGNORECASE,
-    ),
+)
+_DATABASE_FILE_EXTENSION_PATTERN: Final[Pattern[str]] = compile_regex(
+    r"\.(?:db|sqlite(?:3)?)(?![A-Za-z0-9])",
+    IGNORECASE,
+)
+_ASCII_ALNUM_WORD_PATTERN: Final[Pattern[str]] = compile_regex(r"[A-Za-z0-9]+")
+_DATABASE_DIRECTORY_NAMES: Final[frozenset[str]] = frozenset({"mysql", "postgresql"})
+_NUMERIC_TOKEN_PATTERN: Final[Pattern[str]] = compile_regex(
+    r"(?<![A-Za-z0-9_])(?P<open>\()?(?P<sign_before>[+-])?\$?(?P<sign_after>[+-])?"
+    r"(?P<number>(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?)"
+    r"(?P<close>\))?(?![A-Za-z0-9_])"
 )
 _FORBIDDEN_FIELD_NAMES: Final[tuple[str, ...]] = (
     "database_url",
@@ -108,6 +105,15 @@ _FORBIDDEN_FIELD_NAMES: Final[tuple[str, ...]] = (
 Span = tuple[int, int]
 
 
+@dataclass(frozen=True, slots=True)
+class _ExactValues:
+    string_literals: tuple[str, ...]
+    numeric_values: frozenset[Decimal]
+
+
+_EMPTY_EXACT_VALUES: Final = _ExactValues((), frozenset())
+
+
 def build_safe_request(
     *,
     safe_text: str,
@@ -119,6 +125,8 @@ def build_safe_request(
 
     if not isinstance(safe_text, str) or not safe_text:
         raise BoundaryViolation("safe text must be a non-empty string")
+    if len(safe_text) > MAX_SAFE_TEXT_LENGTH:
+        raise BoundaryViolation("safe text exceeds maximum length")
     if not isinstance(system_prompt_id, SystemPromptId):
         raise BoundaryViolation("system prompt must use a repository-owned identifier")
     if automotive_facts is not None:
@@ -153,14 +161,14 @@ def build_safe_request(
         raise BoundaryViolation("safe request contract validation failed")
 
     serialized = request.model_dump(mode="json")
-    serialized_violation = _inspect_serialized(serialized)
+    serialized_violation = _inspect_serialized(serialized, exact_values)
     if serialized_violation is not None:
         kind, category = serialized_violation
         raise BoundaryViolation(f"serialized request contains forbidden {kind}: {category}")
     return request
 
 
-def _normalize_exact_values(values: Collection[str | int]) -> tuple[str, ...]:
+def _normalize_exact_values(values: Collection[str | int]) -> _ExactValues:
     normalized: tuple[object, ...] | None = None
     if isinstance(values, (str, bytes, bytearray)):
         raise BoundaryViolation("forbidden exact values collection is invalid")
@@ -171,15 +179,16 @@ def _normalize_exact_values(values: Collection[str | int]) -> tuple[str, ...]:
     if normalized is None:
         raise BoundaryViolation("forbidden exact values collection is invalid")
 
-    rendered: list[str] = []
+    string_literals: list[str] = []
+    numeric_values: set[Decimal] = set()
     for value in normalized:
         if type(value) is int:
-            rendered.append(str(value))
+            numeric_values.add(Decimal(value))
         elif isinstance(value, str) and value:
-            rendered.append(value)
+            string_literals.append(value)
         else:
             raise BoundaryViolation("forbidden exact values collection is invalid")
-    return tuple(rendered)
+    return _ExactValues(tuple(string_literals), frozenset(numeric_values))
 
 
 def _protected_spans(text: str) -> tuple[Span, ...]:
@@ -210,7 +219,7 @@ def _find_manual_violation(text: str) -> tuple[str, str] | None:
     field_name = _find_forbidden_field_name(text)
     if field_name is not None:
         return "field name", field_name
-    if any(pattern.search(text) is not None for pattern in _DATABASE_LOCATION_PATTERNS):
+    if _contains_database_location(text):
         return "category", "database location"
     if _contains_private_ipv4(text):
         return "category", "private network address"
@@ -234,6 +243,23 @@ def _find_forbidden_field_name(text: str) -> str | None:
         if pattern.search(text) is not None:
             return field_name
     return None
+
+
+def _contains_database_location(text: str) -> bool:
+    for chunk in text.split():
+        if any(pattern.search(chunk) is not None for pattern in _DATABASE_SCHEME_PATTERNS):
+            return True
+        if _DATABASE_FILE_EXTENSION_PATTERN.search(chunk) is not None:
+            return True
+        if "/" not in chunk and "\\" not in chunk:
+            continue
+        for segment in chunk.replace("\\", "/").split("/"):
+            if any(
+                match.group().casefold() in _DATABASE_DIRECTORY_NAMES
+                for match in _ASCII_ALNUM_WORD_PATTERN.finditer(segment)
+            ):
+                return True
+    return False
 
 
 def _contains_private_ipv4(text: str) -> bool:
@@ -291,14 +317,44 @@ def _reject_unprotected_detections(
 
 
 def _reject_exact_values(
-    text: str, exact_values: Sequence[str], protected_spans: Sequence[Span]
+    text: str, exact_values: _ExactValues, protected_spans: Sequence[Span]
 ) -> None:
+    if _contains_exact_value(text, exact_values, protected_spans):
+        raise BoundaryViolation("request contains an exact confidential value")
+
+
+def _contains_exact_value(
+    text: str, exact_values: _ExactValues, protected_spans: Sequence[Span]
+) -> bool:
     locally_exempt = (*protected_spans, *_month_spans(text))
     inspectable = _blank_spans(text, locally_exempt)
-    for value in exact_values:
+    for value in exact_values.string_literals:
         for match in finditer(escape(value), inspectable):
             if _is_standalone_match(inspectable, match.start(), match.end(), value):
-                raise BoundaryViolation("request contains an exact confidential value")
+                return True
+    return _contains_forbidden_numeric_value(inspectable, exact_values.numeric_values)
+
+
+def _contains_forbidden_numeric_value(text: str, forbidden_values: frozenset[Decimal]) -> bool:
+    if not forbidden_values:
+        return False
+    for match in _NUMERIC_TOKEN_PATTERN.finditer(text):
+        has_open_parenthesis = match.group("open") is not None
+        has_close_parenthesis = match.group("close") is not None
+        sign_before = match.group("sign_before")
+        sign_after = match.group("sign_after")
+        if has_open_parenthesis != has_close_parenthesis:
+            continue
+        if sign_before is not None and sign_after is not None:
+            continue
+
+        numeric_value = Decimal(match.group("number").replace(",", ""))
+        explicit_sign = sign_before or sign_after
+        if has_open_parenthesis or explicit_sign == "-":
+            numeric_value = -numeric_value
+        if numeric_value in forbidden_values:
+            return True
+    return False
 
 
 def _is_standalone_match(text: str, start: int, end: int, value: str) -> bool:
@@ -316,7 +372,9 @@ def _is_standalone_match(text: str, start: int, end: int, value: str) -> bool:
     return True
 
 
-def _inspect_serialized(value: object) -> tuple[str, str] | None:
+def _inspect_serialized(
+    value: object, exact_values: _ExactValues = _EMPTY_EXACT_VALUES
+) -> tuple[str, str] | None:
     if isinstance(value, Mapping):
         for key, nested in value.items():
             if not isinstance(key, str):
@@ -324,13 +382,13 @@ def _inspect_serialized(value: object) -> tuple[str, str] | None:
             normalized_key = key.casefold()
             if normalized_key in _FORBIDDEN_FIELD_NAMES:
                 return "field name", normalized_key
-            violation = _inspect_serialized(nested)
+            violation = _inspect_serialized(nested, exact_values)
             if violation is not None:
                 return violation
         return None
     if isinstance(value, list):
         for nested in value:
-            violation = _inspect_serialized(nested)
+            violation = _inspect_serialized(nested, exact_values)
             if violation is not None:
                 return violation
         return None
@@ -339,6 +397,8 @@ def _inspect_serialized(value: object) -> tuple[str, str] | None:
         field_name = _find_forbidden_field_name(visible)
         if field_name is not None:
             return "field name", field_name
-        if any(pattern.search(visible) is not None for pattern in _DATABASE_LOCATION_PATTERNS):
+        if _contains_database_location(visible):
             return "category", "database location"
+        if _contains_exact_value(value, exact_values, _protected_spans(value)):
+            return "category", "exact confidential value"
     return None
