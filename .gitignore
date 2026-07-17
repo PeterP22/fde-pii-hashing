@@ -1,5 +1,6 @@
 .worktrees/
-.env
+.env*
+!.env.example
 *.db
 captures/
 .venv/

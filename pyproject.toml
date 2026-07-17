@@ -18,10 +18,14 @@ dependencies = [
 dev = [
   "mypy>=1.17,<2",
   "pip-audit>=2.9,<3",
-  "pytest>=8.4,<9",
+  "pytest>=9.0.3,<10",
   "pytest-cov>=6.2,<7",
   "ruff>=0.12,<1",
 ]
+
+[tool.uv]
+# GHSA-537c-gmf6-5ccf: this hash/mask-only lab smoke-tests Presidio with the patched release.
+override-dependencies = ["cryptography>=48.0.1,<49"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fde_privacy"]
@@ -31,11 +35,15 @@ allow-direct-references = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = ["--strict-config", "--strict-markers"]
 markers = ["integration: requires local Docker services"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B", "I", "UP"]
 
 [tool.mypy]
 python_version = "3.12"
