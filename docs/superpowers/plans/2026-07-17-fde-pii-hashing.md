@@ -56,6 +56,9 @@
 - Overall trend: compare first three-month mean with final three-month mean; more than +5% is `GROWING`, below -5% is `DECLINING`, otherwise `MIXED`.
 - Missing any required month prevents `AutomotiveNarrativeFacts` construction and skips model narration.
 - Clean automotive data uses `data_quality_flags=(DataQualityFlag.NONE,)`; `NONE` never enables a model caveat.
+- Supply chain: Presidio 2.2.363's `cryptography<47` cap is temporarily overridden for the
+  patched range. Remove the override when Presidio supports patched cryptography; mask/hash
+  compatibility tests and the dependency audit must pass until then.
 
 ### Task 1: Bootstrap the safe Python project
 
@@ -98,18 +101,27 @@ dependencies = [
 dev = [
   "mypy>=1.17,<2",
   "pip-audit>=2.9,<3",
-  "pytest>=8.4,<9",
+  "pytest>=9.0.3,<10",
   "pytest-cov>=6.2,<7",
   "ruff>=0.12,<1",
 ]
 
+[tool.uv]
+# Presidio 2.2.363 caps cryptography<47, conflicting with the GHSA-537c-gmf6-5ccf fix;
+# tests verify the required mask/hash behavior with the patched range.
+override-dependencies = ["cryptography>=48.0.1,<49"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = ["--strict-config", "--strict-markers"]
 markers = ["integration: requires local Docker services"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B", "I", "UP"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -963,7 +975,8 @@ Expected: PASS with meaningful coverage across every boundary module.
 
 Run: `uv run pip-audit`
 
-Expected: no known vulnerabilities in the locked environment. Any finding must be resolved or documented before publication.
+Expected: exit 0 with no unignored known vulnerabilities in the locked environment. Do not add
+`--ignore-vuln` exemptions; resolve every finding before publication.
 
 Validate the Gitleaks configuration locally when the CLI is available; otherwise inspect the pinned CI job and require its first public run to pass before calling publication complete.
 
