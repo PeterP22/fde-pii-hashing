@@ -25,7 +25,7 @@ class CapturingMockAdapter:
     def complete(self, request: SafeModelRequest) -> str:
         """Serialize exactly once and return a deterministic response."""
 
-        if not isinstance(request, SafeModelRequest):
+        if type(request) is not SafeModelRequest:
             raise TypeError("request must be a SafeModelRequest")
         self.last_payload = request.model_dump_json()
         return request.safe_text if self._response is None else self._response

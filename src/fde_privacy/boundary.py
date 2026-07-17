@@ -71,17 +71,20 @@ _IPV4_CANDIDATE_PATTERN: Final[Pattern[str]] = compile_regex(
 )
 _DATABASE_LOCATION_PATTERNS: Final[tuple[Pattern[str], ...]] = (
     compile_regex(
-        r"\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|sqlite)://\S+",
+        r"(?<![A-Za-z0-9])(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|"
+        r"sqlite)://\S+",
         IGNORECASE,
     ),
-    compile_regex(r"\bjdbc:[a-z0-9]+://\S+", IGNORECASE),
+    compile_regex(r"(?<![A-Za-z0-9])jdbc:[a-z0-9]+://\S+", IGNORECASE),
     compile_regex(
-        r"(?<!\w)(?:/[A-Za-z0-9._-]+)+(?:\.db|\.sqlite[0-9]*|/postgresql|/mysql)"
+        r"(?<![A-Za-z0-9])(?:/[A-Za-z0-9._-]+)+"
+        r"(?:\.db|\.sqlite[0-9]*|/postgresql|/mysql)"
         r"(?:/[^\s]*)?",
         IGNORECASE,
     ),
     compile_regex(
-        r"\b[A-Z]:\\(?:[^\\\s]+\\)*(?:[^\\\s]+\.(?:db|sqlite[0-9]*)|"
+        r"(?<![A-Za-z0-9])[A-Z]:\\(?:[^\\\s]+\\)*"
+        r"(?:[^\\\s]+\.(?:db|sqlite[0-9]*)|"
         r"(?:postgresql|mysql)(?:\\[^\s]*)?)",
         IGNORECASE,
     ),
@@ -128,12 +131,9 @@ def build_safe_request(
         raise BoundaryViolation(f"request contains forbidden {kind}: {category}")
 
     _reject_exact_values(safe_text, exact_values, protected_spans)
-    overlapping_detection = _reject_unprotected_detections(
-        detections, protected_spans, len(safe_text)
-    )
-    if overlapping_detection:
-        visible_detections = _run_detector(visible_text)
-        _reject_unprotected_detections(visible_detections, (), len(safe_text))
+    _reject_unprotected_detections(detections, protected_spans, len(safe_text))
+    visible_detections = _run_detector(visible_text)
+    _reject_unprotected_detections(visible_detections, (), len(safe_text))
 
     request: SafeModelRequest | None = None
     try:
@@ -223,7 +223,7 @@ def _find_manual_violation(text: str) -> tuple[str, str] | None:
 def _find_forbidden_field_name(text: str) -> str | None:
     for field_name in _FORBIDDEN_FIELD_NAMES:
         pattern = compile_regex(
-            rf"(?<![A-Za-z0-9_]){escape(field_name)}(?![A-Za-z0-9_])",
+            rf"(?<![A-Za-z0-9]){escape(field_name)}(?![A-Za-z0-9])",
             IGNORECASE,
         )
         if pattern.search(text) is not None:
@@ -256,8 +256,7 @@ def _run_detector(text: str) -> tuple[object, ...]:
 
 def _reject_unprotected_detections(
     detections: Sequence[object], protected_spans: Sequence[Span], text_length: int
-) -> bool:
-    overlaps_protected_value = False
+) -> None:
     for detection in detections:
         if (
             not isinstance(detection, DetectedEntity)
@@ -268,9 +267,6 @@ def _reject_unprotected_detections(
         ):
             raise BoundaryViolation("local privacy detection returned an invalid category")
         if any(start <= detection.start and detection.end <= end for start, end in protected_spans):
-            continue
-        if any(detection.start < end and start < detection.end for start, end in protected_spans):
-            overlaps_protected_value = True
             continue
 
         decision: PolicyDecision | None = None
@@ -287,7 +283,6 @@ def _reject_unprotected_detections(
         )
         disposition = "review-required" if decision.needs_review else "disallowed"
         raise BoundaryViolation(f"request contains {disposition} entity type: {category}")
-    return overlaps_protected_value
 
 
 def _reject_exact_values(

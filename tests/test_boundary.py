@@ -10,7 +10,7 @@ from fde_privacy.contracts import SafeModelRequest
 from fde_privacy.detector import DetectedEntity
 from fde_privacy.model_adapters import CapturingMockAdapter, ModelAdapter
 
-SAFE_HASH = "12345" + "a" * 59
+SAFE_HASH = "a" * 20 + "12345" + "a" * 39
 SAFE_TOKEN = "{{EMAIL_ADDRESS:123456789012345678901234}}"
 
 
@@ -67,6 +67,66 @@ def test_build_safe_request_rejects_leakage_without_echoing_it(
         assert secret not in formatted
     assert error.value.__cause__ is None
     assert error.value.__context__ is None
+
+
+@pytest.mark.parametrize(
+    ("unsafe_text", "category"),
+    [
+        ("<PERSON>_postgresql://db/app", "database location"),
+        ("<PERSON>_/var/lib/postgresql/customer.db", "database location"),
+        (r"<PERSON>_C:\data\customer.db", "database location"),
+        ("<PERSON>_database_url", "database_url"),
+        ("<PERSON>_host", "host"),
+        ("<PERSON>_sql", "sql"),
+        ("<PERSON>_rows", "rows"),
+    ],
+)
+def test_database_checks_reject_underscore_adjacency_after_protected_atom(
+    unsafe_text: str, category: str
+) -> None:
+    with pytest.raises(BoundaryViolation, match=category) as error:
+        build_safe_request(
+            safe_text=unsafe_text,
+            system_prompt_id=SystemPromptId.PII_SUMMARY,
+        )
+
+    assert unsafe_text not in "".join(format_exception(error.value))
+
+
+@pytest.mark.parametrize(
+    "unsafe_value",
+    [
+        "<PERSON>_postgresql://db/app",
+        "<PERSON>_/var/lib/postgresql/customer.db",
+        r"<PERSON>_C:\data\customer.db",
+        "<PERSON>_database_url",
+        "<PERSON>_host",
+        "<PERSON>_sql",
+        "<PERSON>_rows",
+    ],
+)
+def test_recursive_serialized_value_checks_use_same_database_boundaries(
+    unsafe_value: str,
+) -> None:
+    assert boundary_module._inspect_serialized({"allowed": [{"content": unsafe_value}]}) is not None
+
+
+def test_database_checks_do_not_match_substrings_inside_alphanumeric_words(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = (
+        "ghost hostage airport transport database_urlish credentialsmith "
+        "connection_strings nosql schemas browsing"
+    )
+    monkeypatch.setattr(boundary_module, "detect_pii", lambda _: ())
+
+    request = build_safe_request(
+        safe_text=text,
+        system_prompt_id=SystemPromptId.PII_SUMMARY,
+    )
+
+    assert request.safe_text == text
+    assert boundary_module._inspect_serialized({"allowed": [{"content": text}]}) is None
 
 
 @pytest.mark.parametrize(
@@ -179,10 +239,18 @@ def test_detection_wholly_inside_a_valid_repository_token_is_allowed(
 ) -> None:
     text = f"Contact {SAFE_TOKEN}."
     start = text.index("123456")
+    detector_inputs: list[str] = []
+
+    def detect_token_then_nothing(value: str) -> tuple[DetectedEntity, ...]:
+        detector_inputs.append(value)
+        if len(detector_inputs) == 1:
+            return (DetectedEntity("PHONE_NUMBER", start, start + 6, 0.2),)
+        return ()
+
     monkeypatch.setattr(
         boundary_module,
         "detect_pii",
-        lambda _: (DetectedEntity("PHONE_NUMBER", start, start + 6, 0.2),),
+        detect_token_then_nothing,
     )
 
     request = build_safe_request(
@@ -191,6 +259,58 @@ def test_detection_wholly_inside_a_valid_repository_token_is_allowed(
     )
 
     assert request.safe_text == text
+    assert detector_inputs == [text, f"Contact {' ' * len(SAFE_TOKEN)}."]
+
+
+def test_second_detector_pass_always_checks_outside_valid_protected_atoms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_tfn = "876 543 210"
+    text = f"<PERSON> reference {raw_tfn}"
+    tfn_start = text.index(raw_tfn)
+    detector_inputs: list[str] = []
+
+    def staged_detector(value: str) -> tuple[DetectedEntity, ...]:
+        detector_inputs.append(value)
+        if len(detector_inputs) == 1:
+            return (DetectedEntity("PERSON", 1, 7, 0.95),)
+        return (DetectedEntity("AU_TFN", tfn_start, tfn_start + len(raw_tfn), 1.0),)
+
+    monkeypatch.setattr(boundary_module, "detect_pii", staged_detector)
+
+    with pytest.raises(BoundaryViolation, match="AU_TFN") as error:
+        build_safe_request(
+            safe_text=text,
+            system_prompt_id=SystemPromptId.PII_SUMMARY,
+        )
+
+    assert detector_inputs == [text, f"{' ' * len('<PERSON>')} reference {raw_tfn}"]
+    assert raw_tfn not in "".join(format_exception(error.value))
+
+
+def test_first_pass_detection_partially_overlapping_protected_atom_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = "<PERSON>suffix"
+    detector_inputs: list[str] = []
+
+    def detect_partial_overlap(value: str) -> tuple[DetectedEntity, ...]:
+        detector_inputs.append(value)
+        return (DetectedEntity("PERSON", 1, len(text), 0.95),)
+
+    monkeypatch.setattr(
+        boundary_module,
+        "detect_pii",
+        detect_partial_overlap,
+    )
+
+    with pytest.raises(BoundaryViolation, match="PERSON"):
+        build_safe_request(
+            safe_text=text,
+            system_prompt_id=SystemPromptId.PII_SUMMARY,
+        )
+
+    assert detector_inputs == [text]
 
 
 def test_exact_confidential_value_is_checked_locally_but_not_serialized() -> None:
@@ -254,7 +374,7 @@ def test_built_request_is_immutable() -> None:
     )
 
     with pytest.raises(ValidationError):
-        request.safe_text = "changed"  # type: ignore[misc]
+        request.safe_text = "changed"
 
 
 def test_mock_adapter_captures_exact_deterministic_provider_payload() -> None:
@@ -299,6 +419,27 @@ def test_mock_adapter_rejects_wrong_runtime_type_without_echoing_object() -> Non
 
     with pytest.raises(TypeError) as error:
         adapter.complete(BadRequest())  # type: ignore[arg-type]
+
+    assert adapter.last_payload is None
+    assert fictional_secret not in "".join(format_exception(error.value))
+
+
+def test_mock_adapter_rejects_safe_request_subclass_before_serialization() -> None:
+    fictional_secret = "postgresql://admin:secret@db.internal/app"
+
+    class LeakySafeModelRequest(SafeModelRequest):
+        database_url: str
+
+    request = LeakySafeModelRequest(
+        system_instruction="repository instruction",
+        safe_text="ordinary safe words",
+        automotive_facts=None,
+        database_url=fictional_secret,
+    )
+    adapter = CapturingMockAdapter()
+
+    with pytest.raises(TypeError) as error:
+        adapter.complete(request)
 
     assert adapter.last_payload is None
     assert fictional_secret not in "".join(format_exception(error.value))
