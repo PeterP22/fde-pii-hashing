@@ -219,13 +219,19 @@ def validate_safe_model_request(request: SafeModelRequest) -> SafeModelRequest:
     if prompt_id is None:
         raise BoundaryViolation("request system instruction is not repository owned")
 
+    # Provider adapters use a deliberately narrower contract than the general
+    # boundary builder: no visible numeric literal may cross this final egress
+    # gate under *any* prompt. Otherwise a caller could label confidential
+    # automotive totals as a PII summary and bypass prompt-specific checks.
+    # Opaque tokens and hashes remain allowed because their spans are blanked.
+    # Automotive month labels are qualitative context, so their spans are also
+    # excluded from numeric inspection for that closed request type.
+    excluded_spans = _protected_spans(request.safe_text)
     if prompt_id is SystemPromptId.AUTOMOTIVE_NARRATIVE:
-        inspectable = _blank_spans(
-            request.safe_text,
-            (*_protected_spans(request.safe_text), *_month_spans(request.safe_text)),
-        )
-        if any(_NUMERIC_TOKEN_PATTERN.finditer(inspectable)):
-            raise BoundaryViolation("automotive request contains an exact numeric value")
+        excluded_spans = (*excluded_spans, *_month_spans(request.safe_text))
+    inspectable = _blank_spans(request.safe_text, excluded_spans)
+    if any(_NUMERIC_TOKEN_PATTERN.finditer(inspectable)):
+        raise BoundaryViolation("provider request contains an exact numeric value")
 
     rebuilt = build_safe_request(
         safe_text=request.safe_text,

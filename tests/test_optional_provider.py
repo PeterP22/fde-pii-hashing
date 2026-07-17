@@ -250,6 +250,10 @@ def test_provider_rejects_arbitrary_inbound_and_subclass_requests(
             "alice.johnson@example.com exact total 987654321",
         ),
         (
+            "Summarize only the transformed user text. Do not infer or reconstruct protected values.",
+            "Sales were 24680 units.",
+        ),
+        (
             "Write an automotive narrative using only the transformed user text and approved facts.",
             "Summarize exact total 987654321",
         ),
@@ -272,6 +276,7 @@ def test_provider_revalidates_directly_constructed_safe_requests(
     formatted = "".join(format_exception(error.value))
     assert "alice.johnson@example.com" not in formatted
     assert "987654321" not in formatted
+    assert "24680" not in formatted
 
 
 @pytest.mark.parametrize(
