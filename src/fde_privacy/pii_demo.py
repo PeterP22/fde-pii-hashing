@@ -1,10 +1,11 @@
 """Inspectable local-first PII transformation demonstration."""
 
+import argparse
 import json
 import os
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Final
@@ -12,7 +13,13 @@ from typing import Final
 from fde_privacy.boundary import SystemPromptId, build_safe_request
 from fde_privacy.contracts import SafeModelRequest, SessionContext
 from fde_privacy.detector import DetectedEntity, detect_pii
-from fde_privacy.model_adapters import CapturingMockAdapter, ModelAdapter
+from fde_privacy.model_adapters import (
+    CapturingMockAdapter,
+    LiteLLMAdapter,
+    ModelAdapter,
+    ProviderConfigurationError,
+    ProviderDisabled,
+)
 from fde_privacy.policy import PiiAction, PolicyDecision, decide_policy
 from fde_privacy.token_vault import TokenVault
 from fde_privacy.transforms import SpanReplacement, hash_value, mask_value, transform_text
@@ -193,8 +200,22 @@ def _evaluate_all_policies(
     return tuple(decisions)
 
 
-def main() -> int:
+def main(argv: Sequence[str] = ()) -> int:
     """Print the four inspectable demo stages using only local components."""
+
+    parser = argparse.ArgumentParser(description="Run the inspectable local-first PII demo.")
+    parser.add_argument("--provider", choices=("mock", "litellm"), default="mock")
+    args = parser.parse_args(tuple(argv))
+
+    adapter: ModelAdapter
+    if args.provider == "litellm":
+        try:
+            adapter = LiteLLMAdapter.from_environment()
+        except (ProviderDisabled, ProviderConfigurationError) as error:
+            print(str(error), file=sys.stderr)
+            return 2
+    else:
+        adapter = CapturingMockAdapter()
 
     salt = os.environ.get("PII_HASH_SALT")
     if salt is None or len(salt.encode("utf-8")) < _MINIMUM_SALT_BYTES:
@@ -209,7 +230,7 @@ def main() -> int:
                 session_id="fictional-demo-session",
                 issued_at=datetime.now(UTC),
             ),
-            CapturingMockAdapter(),
+            adapter,
             salt,
         )
     except Exception:
@@ -230,4 +251,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))
