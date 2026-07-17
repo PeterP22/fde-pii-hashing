@@ -1,0 +1,30 @@
+model_list:
+  - model_name: capture-model
+    litellm_params:
+      model: openai/capture-model
+      api_base: http://capture:8080/v1
+      api_key: local-capture-placeholder
+
+guardrails:
+  - guardrail_name: local-presidio-pre-call
+    litellm_params:
+      guardrail: presidio
+      mode: pre_call
+      default_on: true
+      presidio_filter_scope: input
+      presidio_language: en
+      presidio_analyzer_api_base: http://presidio-analyzer:3000
+      presidio_anonymizer_api_base: http://presidio-anonymizer:3000
+      pii_entities_config:
+        PERSON: MASK
+        EMAIL_ADDRESS: MASK
+        PHONE_NUMBER: MASK
+        CREDIT_CARD: BLOCK
+        CRYPTO: BLOCK
+        IBAN_CODE: BLOCK
+        MEDICAL_LICENSE: BLOCK
+        US_BANK_NUMBER: BLOCK
+        US_DRIVER_LICENSE: BLOCK
+        US_ITIN: BLOCK
+        US_PASSPORT: BLOCK
+        US_SSN: BLOCK
