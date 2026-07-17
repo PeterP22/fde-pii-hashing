@@ -1,6 +1,8 @@
+from collections.abc import Iterator
 from dataclasses import FrozenInstanceError
 from hashlib import sha256
 from re import fullmatch
+from traceback import format_exception
 
 import pytest
 
@@ -109,6 +111,36 @@ def test_transform_text_applies_multiple_original_spans_right_to_left() -> None:
     )
 
     assert transformed == f"Email <EMAIL_ADDRESS> for customer {'a' * 64}."
+
+
+def test_transform_text_applies_unordered_adjacent_unicode_spans() -> None:
+    text = "A🙂漢B"
+
+    transformed = transform_text(
+        text,
+        [
+            SpanReplacement(start=2, end=4, value="<SECOND>"),
+            SpanReplacement(start=0, end=2, value="<FIRST>"),
+        ],
+    )
+
+    assert transformed == "<FIRST><SECOND>"
+
+
+def test_invalid_replacements_iterable_does_not_survive_in_traceback() -> None:
+    fictional_secret = "alice@example.com"
+
+    class SecretBearingIterable:
+        def __iter__(self) -> Iterator[SpanReplacement]:
+            raise TypeError(fictional_secret)
+
+    with pytest.raises(TransformValidationError) as error:
+        transform_text("safe text", SecretBearingIterable())
+
+    formatted_traceback = "".join(format_exception(error.value))
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert fictional_secret not in formatted_traceback
 
 
 @pytest.mark.parametrize(

@@ -68,10 +68,13 @@ def transform_text(text: str, replacements: Iterable[SpanReplacement]) -> str:
     if not isinstance(text, str):
         raise TransformValidationError("text must be a string")
 
+    ordered: list[SpanReplacement] | None
     try:
         ordered = sorted(replacements, key=lambda replacement: (replacement.start, replacement.end))
-    except (AttributeError, TypeError) as error:
-        raise TransformValidationError("replacements must contain valid spans") from error
+    except (AttributeError, TypeError):
+        ordered = None
+    if ordered is None:
+        raise TransformValidationError("replacements must contain valid spans")
 
     previous_end = -1
     for replacement in ordered:
