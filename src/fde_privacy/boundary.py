@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
 from ipaddress import IPv4Address
+from math import isfinite
 from re import IGNORECASE, Pattern, escape, finditer
 from re import compile as compile_regex
 from types import MappingProxyType
@@ -90,6 +91,13 @@ _NUMERIC_TOKEN_PATTERN: Final[Pattern[str]] = compile_regex(
     r"(?<![A-Za-z0-9_])(?P<open>\()?(?P<sign_before>[+-])?\$?(?P<sign_after>[+-])?"
     r"(?P<number>(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?)"
     r"(?P<close>\))?(?![A-Za-z0-9_])"
+)
+_NUMERIC_LITERAL_PATTERN: Final[Pattern[str]] = compile_regex(
+    r"(?P<open>\()?(?P<sign_before>[+-])?"
+    r"(?:(?:[A-Z]{3})[ \t]+)?\$?(?P<sign_after>[+-])?"
+    r"(?P<number>(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?)"
+    r"(?P<close>\))?",
+    IGNORECASE,
 )
 _FORBIDDEN_FIELD_NAMES: Final[tuple[str, ...]] = (
     "database_url",
@@ -186,6 +194,20 @@ def _normalize_exact_values(values: Collection[str | int]) -> _ExactValues:
             numeric_values.add(Decimal(value))
         elif isinstance(value, str) and value:
             string_literals.append(value)
+            match = _NUMERIC_LITERAL_PATTERN.fullmatch(value)
+            if match is not None:
+                has_open_parenthesis = match.group("open") is not None
+                has_close_parenthesis = match.group("close") is not None
+                sign_before = match.group("sign_before")
+                sign_after = match.group("sign_after")
+                if has_open_parenthesis == has_close_parenthesis and not (
+                    sign_before is not None and sign_after is not None
+                ):
+                    numeric_value = Decimal(match.group("number").replace(",", ""))
+                    explicit_sign = sign_before or sign_after
+                    if has_open_parenthesis or explicit_sign == "-":
+                        numeric_value = -numeric_value
+                    numeric_values.add(numeric_value)
         else:
             raise BoundaryViolation("forbidden exact values collection is invalid")
     return _ExactValues(tuple(string_literals), frozenset(numeric_values))
@@ -343,14 +365,12 @@ def _contains_forbidden_numeric_value(text: str, forbidden_values: frozenset[Dec
         has_close_parenthesis = match.group("close") is not None
         sign_before = match.group("sign_before")
         sign_after = match.group("sign_after")
-        if has_open_parenthesis != has_close_parenthesis:
-            continue
         if sign_before is not None and sign_after is not None:
             continue
 
         numeric_value = Decimal(match.group("number").replace(",", ""))
         explicit_sign = sign_before or sign_after
-        if has_open_parenthesis or explicit_sign == "-":
+        if (has_open_parenthesis and has_close_parenthesis) or explicit_sign == "-":
             numeric_value = -numeric_value
         if numeric_value in forbidden_values:
             return True
@@ -401,4 +421,18 @@ def _inspect_serialized(
             return "category", "database location"
         if _contains_exact_value(value, exact_values, _protected_spans(value)):
             return "category", "exact confidential value"
+        return None
+    numeric_value: Decimal | None = None
+    if type(value) is int:
+        numeric_value = Decimal(value)
+    elif type(value) is float:
+        if not isfinite(value):
+            return "category", "invalid numeric value"
+        numeric_value = Decimal(str(value))
+    elif isinstance(value, Decimal):
+        if not value.is_finite():
+            return "category", "invalid numeric value"
+        numeric_value = value
+    if numeric_value is not None and numeric_value in exact_values.numeric_values:
+        return "category", "exact confidential value"
     return None

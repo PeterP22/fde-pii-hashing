@@ -1,3 +1,4 @@
+from decimal import Decimal
 from inspect import signature
 from time import perf_counter
 from traceback import format_exception
@@ -457,6 +458,58 @@ def test_numeric_exact_values_reject_equivalent_formatted_totals(
     assert formatted_total not in "".join(format_exception(error.value))
 
 
+@pytest.mark.parametrize(
+    "unmatched_total",
+    [
+        "125000)",
+        "(125000",
+        "$125,000)",
+        "($125,000.00",
+        "AUD 125,000)",
+    ],
+)
+def test_numeric_exact_values_reject_core_with_unmatched_wrapper(
+    unmatched_total: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(boundary_module, "detect_pii", lambda _: ())
+
+    with pytest.raises(BoundaryViolation, match="exact confidential value") as error:
+        build_safe_request(
+            safe_text=f"Total {unmatched_total}",
+            system_prompt_id=SystemPromptId.PII_SUMMARY,
+            forbidden_exact_values=(125000,),
+        )
+
+    assert unmatched_total not in "".join(format_exception(error.value))
+
+
+@pytest.mark.parametrize("unmatched_total", ["125000)", "(125000", "($125,000.00"])
+def test_recursive_inspection_rejects_numeric_core_with_unmatched_wrapper(
+    unmatched_total: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NestedSerializedRequest:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def model_dump(self, *, mode: str) -> dict[str, object]:
+            assert mode == "json"
+            return {"allowed": [{"content": f"Total {unmatched_total}"}]}
+
+    monkeypatch.setattr(boundary_module, "detect_pii", lambda _: ())
+    monkeypatch.setattr(boundary_module, "SafeModelRequest", NestedSerializedRequest)
+
+    with pytest.raises(BoundaryViolation, match="exact confidential value") as error:
+        build_safe_request(
+            safe_text="ordinary safe words",
+            system_prompt_id=SystemPromptId.PII_SUMMARY,
+            forbidden_exact_values=(125000,),
+        )
+
+    assert unmatched_total not in "".join(format_exception(error.value))
+
+
 @pytest.mark.parametrize("formatted_total", ["$125,000.00", "AUD 125,000", "125000.00"])
 def test_recursive_serialized_inspection_rejects_formatted_exact_totals(
     formatted_total: str,
@@ -481,6 +534,130 @@ def test_recursive_serialized_inspection_rejects_formatted_exact_totals(
         )
 
     assert formatted_total not in "".join(format_exception(error.value))
+
+
+@pytest.mark.parametrize(
+    ("forbidden_string", "equivalent_total"),
+    [
+        ("125000", "$125,000.00"),
+        ("125,000.00", "125000"),
+        ("$125,000", "125000.00"),
+        ("AUD 125,000", "$125,000"),
+    ],
+)
+def test_numeric_forbidden_strings_also_contribute_canonical_values(
+    forbidden_string: str,
+    equivalent_total: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(boundary_module, "detect_pii", lambda _: ())
+
+    with pytest.raises(BoundaryViolation, match="exact confidential value"):
+        build_safe_request(
+            safe_text=f"Total {equivalent_total}",
+            system_prompt_id=SystemPromptId.PII_SUMMARY,
+            forbidden_exact_values=(forbidden_string,),
+        )
+
+
+@pytest.mark.parametrize(
+    ("non_numeric_string", "safe_text"),
+    [
+        ("2025-08", "Year 2025 and month number 08."),
+        ("order125000", "Total $125,000."),
+        ("customer_125000", "Total 125000."),
+    ],
+)
+def test_date_and_identifier_forbidden_strings_do_not_become_numeric(
+    non_numeric_string: str,
+    safe_text: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(boundary_module, "detect_pii", lambda _: ())
+
+    request = build_safe_request(
+        safe_text=safe_text,
+        system_prompt_id=SystemPromptId.PII_SUMMARY,
+        forbidden_exact_values=(non_numeric_string,),
+    )
+
+    assert request.safe_text == safe_text
+
+
+@pytest.mark.parametrize("numeric_scalar", [125000, 125000.0, Decimal("125000.00")])
+def test_recursive_inspection_compares_json_numeric_scalars(
+    numeric_scalar: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NestedSerializedRequest:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def model_dump(self, *, mode: str) -> dict[str, object]:
+            assert mode == "json"
+            return {"allowed": [{"total": numeric_scalar}]}
+
+    monkeypatch.setattr(boundary_module, "detect_pii", lambda _: ())
+    monkeypatch.setattr(boundary_module, "SafeModelRequest", NestedSerializedRequest)
+
+    with pytest.raises(BoundaryViolation, match="exact confidential value"):
+        build_safe_request(
+            safe_text="ordinary safe words",
+            system_prompt_id=SystemPromptId.PII_SUMMARY,
+            forbidden_exact_values=(125000,),
+        )
+
+
+def test_recursive_inspection_does_not_treat_bool_as_numeric(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NestedSerializedRequest:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def model_dump(self, *, mode: str) -> dict[str, object]:
+            assert mode == "json"
+            return {"allowed": [{"total": True}]}
+
+    monkeypatch.setattr(boundary_module, "detect_pii", lambda _: ())
+    monkeypatch.setattr(boundary_module, "SafeModelRequest", NestedSerializedRequest)
+
+    request = build_safe_request(
+        safe_text="ordinary safe words",
+        system_prompt_id=SystemPromptId.PII_SUMMARY,
+        forbidden_exact_values=(1,),
+    )
+
+    assert request is not None
+
+
+@pytest.mark.parametrize(
+    "invalid_scalar",
+    [float("nan"), float("inf"), float("-inf"), Decimal("NaN"), Decimal("Infinity")],
+)
+def test_recursive_inspection_rejects_non_finite_numeric_scalars_safely(
+    invalid_scalar: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NestedSerializedRequest:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def model_dump(self, *, mode: str) -> dict[str, object]:
+            assert mode == "json"
+            return {"allowed": [{"total": invalid_scalar}]}
+
+    monkeypatch.setattr(boundary_module, "detect_pii", lambda _: ())
+    monkeypatch.setattr(boundary_module, "SafeModelRequest", NestedSerializedRequest)
+
+    with pytest.raises(BoundaryViolation, match="invalid numeric value") as error:
+        build_safe_request(
+            safe_text="ordinary safe words",
+            system_prompt_id=SystemPromptId.PII_SUMMARY,
+            forbidden_exact_values=(1,),
+        )
+
+    assert str(invalid_scalar) not in "".join(format_exception(error.value))
 
 
 def test_numeric_exact_checks_ignore_protected_atoms_months_and_identifiers(
