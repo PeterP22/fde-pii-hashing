@@ -1,9 +1,13 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from itertools import count
 from re import fullmatch
+from threading import Barrier
 from traceback import format_exception
 
 import pytest
 
+import fde_privacy.token_vault as token_vault_module
 from fde_privacy.contracts import SessionContext
 from fde_privacy.token_vault import (
     TokenExpired,
@@ -26,6 +30,11 @@ class MutableClock:
 
 def session(owner_id: str = "owner-1", session_id: str = "session-1") -> SessionContext:
     return SessionContext(owner_id=owner_id, session_id=session_id, issued_at=NOW)
+
+
+def assert_token_absent(vault: TokenVault, token: str) -> None:
+    assert token not in vault._ownership_by_token
+    assert all(stored_token != token for _, _, stored_token in vault._entries)
 
 
 def test_tokenize_creates_opaque_token_that_rehydrates_in_same_session() -> None:
@@ -76,6 +85,51 @@ def test_token_expires_at_exactly_the_default_three_hundred_seconds() -> None:
         vault.rehydrate(token, context)
 
 
+def test_tokenize_prunes_expired_entries_and_ownership_rows() -> None:
+    clock = MutableClock()
+    vault = TokenVault(clock=clock)
+    context = session()
+    expired_token = vault.tokenize("first@example.com", "EMAIL_ADDRESS", context)
+    clock.now += timedelta(seconds=301)
+
+    live_token = vault.tokenize("second@example.com", "EMAIL_ADDRESS", context)
+
+    assert_token_absent(vault, expired_token)
+    assert live_token in vault._ownership_by_token
+    assert len(vault._entries) == len(vault._ownership_by_token) == 1
+
+
+def test_rehydrate_prunes_other_expired_entries_and_ownership_rows() -> None:
+    clock = MutableClock()
+    vault = TokenVault(clock=clock)
+    context = session()
+    expired_token = vault.tokenize("first@example.com", "EMAIL_ADDRESS", context)
+    clock.now += timedelta(seconds=100)
+    live_token = vault.tokenize("second@example.com", "EMAIL_ADDRESS", context)
+    clock.now += timedelta(seconds=201)
+
+    vault.rehydrate(live_token, context)
+
+    assert_token_absent(vault, expired_token)
+    assert live_token in vault._ownership_by_token
+    assert len(vault._entries) == len(vault._ownership_by_token) == 1
+
+
+def test_wrong_owner_of_expired_token_gets_ownership_error_without_retaining_token() -> None:
+    clock = MutableClock()
+    vault = TokenVault(clock=clock)
+    owner = session()
+    token = vault.tokenize("alice@example.com", "EMAIL_ADDRESS", owner)
+    clock.now += timedelta(seconds=300)
+
+    with pytest.raises(TokenOwnershipError):
+        vault.rehydrate(token, session(owner_id="owner-2"))
+
+    assert_token_absent(vault, token)
+    with pytest.raises(TokenNotFound):
+        vault.rehydrate(token, owner)
+
+
 @pytest.mark.parametrize(
     "token",
     [
@@ -110,6 +164,58 @@ def test_token_never_contains_original_and_repeated_values_get_distinct_tokens()
     assert first != second
     assert vault.rehydrate(first, context) == original
     assert vault.rehydrate(second, context) == original
+
+
+def test_tokenize_retries_one_time_collision_without_overwriting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_opaque = "a" * 24
+    second_opaque = "b" * 24
+    generated = iter((first_opaque, first_opaque, second_opaque))
+    monkeypatch.setattr(token_vault_module, "token_urlsafe", lambda _: next(generated))
+    vault = TokenVault(clock=MutableClock())
+    context = session()
+
+    first_token = vault.tokenize("first@example.com", "EMAIL_ADDRESS", context)
+    second_token = vault.tokenize("second@example.com", "EMAIL_ADDRESS", context)
+
+    assert first_token == f"{{{{EMAIL_ADDRESS:{first_opaque}}}}}"
+    assert second_token == f"{{{{EMAIL_ADDRESS:{second_opaque}}}}}"
+    assert vault.rehydrate(first_token, context) == "first@example.com"
+    assert vault.rehydrate(second_token, context) == "second@example.com"
+
+
+def test_concurrent_tokenization_is_distinct_and_rehydrates_correctly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker_count = 8
+    barrier = Barrier(worker_count)
+    generated = count()
+
+    def deterministic_token_urlsafe(byte_count: int) -> str:
+        assert byte_count == 18
+        return f"{next(generated):024d}"
+
+    monkeypatch.setattr(token_vault_module, "token_urlsafe", deterministic_token_urlsafe)
+    vault = TokenVault(clock=MutableClock())
+    context = session()
+
+    def tokenize_after_barrier(worker_id: int) -> tuple[str, str]:
+        value = f"person-{worker_id}@example.com"
+        barrier.wait(timeout=5)
+        return value, vault.tokenize(value, "EMAIL_ADDRESS", context)
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [
+            executor.submit(tokenize_after_barrier, worker_id)
+            for worker_id in range(worker_count)
+        ]
+        results = [future.result(timeout=5) for future in futures]
+
+    tokens = [token for _, token in results]
+    assert len(tokens) == len(set(tokens)) == worker_count
+    for value, token in results:
+        assert vault.rehydrate(token, context) == value
 
 
 @pytest.mark.parametrize("value", ["", 123])

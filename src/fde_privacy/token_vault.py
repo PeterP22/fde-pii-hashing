@@ -68,9 +68,11 @@ class TokenVault:
         self._validate_value(value)
         self._validate_entity_type(entity_type)
         self._validate_session(session)
-        expires_at = self._current_time() + self._ttl
+        now = self._current_time()
+        expires_at = now + self._ttl
 
         with self._lock:
+            self._prune_expired(now)
             token = self._new_token(entity_type)
             while token in self._ownership_by_token:
                 token = self._new_token(entity_type)
@@ -86,28 +88,46 @@ class TokenVault:
         """Restore a known, unexpired token for its owning user session."""
 
         self._validate_session(session)
-        if not isinstance(token, str) or fullmatch(_TOKEN_PATTERN, token) is None:
-            raise TokenNotFound("token was not found")
+        token_is_well_formed = (
+            isinstance(token, str) and fullmatch(_TOKEN_PATTERN, token) is not None
+        )
+        now = self._current_time()
 
         with self._lock:
+            if not token_is_well_formed:
+                self._prune_expired(now)
+                raise TokenNotFound("token was not found")
+
             ownership = self._ownership_by_token.get(token)
+            key = (*ownership, token) if ownership is not None else None
+            entry_exists = key in self._entries if key is not None else False
+            entry_is_expired = (
+                key is not None and entry_exists and now >= self._entries[key].expires_at
+            )
+
+            self._prune_expired(now)
+
             if ownership is None:
                 raise TokenNotFound("token was not found")
             if ownership != (session.owner_id, session.session_id):
                 raise TokenOwnershipError("token does not belong to this session")
-
-            key = (*ownership, token)
-            entry = self._entries.get(key)
-            if entry is None:
+            if key is None or not entry_exists:
                 self._ownership_by_token.pop(token, None)
                 raise TokenNotFound("token was not found")
-
-            if self._current_time() >= entry.expires_at:
-                self._entries.pop(key, None)
-                self._ownership_by_token.pop(token, None)
+            if entry_is_expired:
                 raise TokenExpired("token has expired")
 
-            return entry.original
+            return self._entries[key].original
+
+    def _prune_expired(self, now: datetime) -> None:
+        """Remove expired primary and ownership rows while the caller holds the lock."""
+
+        expired_keys = [key for key, entry in self._entries.items() if now >= entry.expires_at]
+        for owner_id, session_id, token in expired_keys:
+            key = (owner_id, session_id, token)
+            self._entries.pop(key, None)
+            if self._ownership_by_token.get(token) == (owner_id, session_id):
+                self._ownership_by_token.pop(token, None)
 
     @staticmethod
     def _new_token(entity_type: str) -> str:
