@@ -51,6 +51,12 @@ class TokenVault:
     """Keep opaque PII tokens reversible only within their owning session."""
 
     def __init__(self, *, ttl: timedelta = _DEFAULT_TTL, clock: Clock = utc_now) -> None:
+        """Initialize the vault with a fast, non-reentrant clock callback.
+
+        The clock runs while the vault lock is held so time sampling and state changes
+        are atomic. It must not call back into this vault.
+        """
+
         if not isinstance(ttl, timedelta) or ttl <= timedelta(0):
             raise TokenValidationError("ttl must be positive")
         if not callable(clock):
@@ -68,11 +74,11 @@ class TokenVault:
         self._validate_value(value)
         self._validate_entity_type(entity_type)
         self._validate_session(session)
-        now = self._current_time()
-        expires_at = now + self._ttl
 
         with self._lock:
+            now = self._current_time()
             self._prune_expired(now)
+            expires_at = now + self._ttl
             token = self._new_token(entity_type)
             while token in self._ownership_by_token:
                 token = self._new_token(entity_type)
@@ -91,9 +97,9 @@ class TokenVault:
         token_is_well_formed = (
             isinstance(token, str) and fullmatch(_TOKEN_PATTERN, token) is not None
         )
-        now = self._current_time()
 
         with self._lock:
+            now = self._current_time()
             if not token_is_well_formed:
                 self._prune_expired(now)
                 raise TokenNotFound("token was not found")

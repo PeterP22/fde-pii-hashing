@@ -2,8 +2,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from itertools import count
 from re import fullmatch
-from threading import Barrier
+from threading import Barrier, Event, Lock, current_thread
 from traceback import format_exception
+from types import TracebackType
 
 import pytest
 
@@ -26,6 +27,30 @@ class MutableClock:
 
     def __call__(self) -> datetime:
         return self.now
+
+
+class DelayNamedThreadLock:
+    def __init__(self, thread_name_prefix: str) -> None:
+        self._thread_name_prefix = thread_name_prefix
+        self._lock = Lock()
+        self.delayed_thread_waiting = Event()
+        self.allow_delayed_thread = Event()
+
+    def __enter__(self) -> None:
+        if current_thread().name.startswith(self._thread_name_prefix):
+            self.delayed_thread_waiting.set()
+            if not self.allow_delayed_thread.wait(timeout=5):
+                raise TimeoutError("delayed test thread was not released")
+        if not self._lock.acquire(timeout=5):
+            raise TimeoutError("test lock acquisition timed out")
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self._lock.release()
 
 
 def session(owner_id: str = "owner-1", session_id: str = "session-1") -> SessionContext:
@@ -216,6 +241,50 @@ def test_concurrent_tokenization_is_distinct_and_rehydrates_correctly(
     assert len(tokens) == len(set(tokens)) == worker_count
     for value, token in results:
         assert vault.rehydrate(token, context) == value
+
+
+def test_delayed_tokenize_does_not_insert_with_pre_lock_timestamp() -> None:
+    clock = MutableClock()
+    vault = TokenVault(clock=clock)
+    context = session()
+    delayed_lock = DelayNamedThreadLock("stale-tokenize")
+    vault._lock = delayed_lock  # type: ignore[assignment]
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="stale-tokenize") as executor:
+        delayed = executor.submit(
+            vault.tokenize,
+            "delayed@example.com",
+            "EMAIL_ADDRESS",
+            context,
+        )
+        assert delayed_lock.delayed_thread_waiting.wait(timeout=5)
+        clock.now += timedelta(seconds=301)
+        try:
+            live_token = vault.tokenize("live@example.com", "EMAIL_ADDRESS", context)
+        finally:
+            delayed_lock.allow_delayed_thread.set()
+        delayed_token = delayed.result(timeout=5)
+
+    assert vault.rehydrate(delayed_token, context) == "delayed@example.com"
+    assert vault.rehydrate(live_token, context) == "live@example.com"
+
+
+def test_delayed_rehydrate_evaluates_expiry_after_lock_acquisition() -> None:
+    clock = MutableClock()
+    vault = TokenVault(clock=clock)
+    context = session()
+    token = vault.tokenize("alice@example.com", "EMAIL_ADDRESS", context)
+    delayed_lock = DelayNamedThreadLock("stale-rehydrate")
+    vault._lock = delayed_lock  # type: ignore[assignment]
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="stale-rehydrate") as executor:
+        delayed = executor.submit(vault.rehydrate, token, context)
+        assert delayed_lock.delayed_thread_waiting.wait(timeout=5)
+        clock.now += timedelta(seconds=300)
+        delayed_lock.allow_delayed_thread.set()
+
+        with pytest.raises(TokenExpired):
+            delayed.result(timeout=5)
 
 
 @pytest.mark.parametrize("value", ["", 123])
