@@ -9,6 +9,8 @@ from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer
 from presidio_analyzer.nlp_engine import NlpEngineProvider
 from presidio_analyzer.predefined_recognizers import AuTfnRecognizer
 
+from fde_privacy.policy import GENERAL_MIN_CONFIDENCE
+
 CUSTOMER_ID_REGEX: Final = r"\bCUST-[0-9]{6}\b"
 CUSTOMER_ID_SCORE: Final = 0.95
 
@@ -69,13 +71,28 @@ def detect_pii(text: str) -> tuple[DetectedEntity, ...]:
         and detection.score == CUSTOMER_ID_SCORE
         and fullmatch(CUSTOMER_ID_REGEX, text[detection.start : detection.end]) is not None
     )
+    owned_emails = tuple(
+        detection
+        for detection in detections
+        if detection.entity_type == "EMAIL_ADDRESS"
+        and GENERAL_MIN_CONFIDENCE <= detection.score <= 1
+    )
     arbitrated = (
         detection
         for detection in detections
-        if detection in owned_customer_ids
-        or not any(
-            customer_id.start <= detection.start and detection.end <= customer_id.end
-            for customer_id in owned_customer_ids
+        if (
+            detection in owned_customer_ids
+            or not any(
+                customer_id.start <= detection.start and detection.end <= customer_id.end
+                for customer_id in owned_customer_ids
+            )
+        )
+        and (
+            detection.entity_type != "URL"
+            or not any(
+                email.start <= detection.start and detection.end <= email.end
+                for email in owned_emails
+            )
         )
     )
     return tuple(

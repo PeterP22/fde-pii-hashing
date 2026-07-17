@@ -137,51 +137,83 @@ def test_representative_fictional_text_reaches_intended_policy_actions() -> None
     )
 
     detections = detect_pii(text)
-    intended = {
-        entity_type: next(
-            detection for detection in detections if detection.entity_type == entity_type
-        )
-        for entity_type in ("PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER", "CUSTOMER_ID")
-    }
-
-    assert {
-        entity_type: decide_policy(detection.entity_type, detection.score)
-        for entity_type, detection in intended.items()
-    } == {
-        "PERSON": PolicyDecision(PiiAction.TOKENIZE, needs_review=False),
-        "EMAIL_ADDRESS": PolicyDecision(PiiAction.TOKENIZE, needs_review=False),
-        "PHONE_NUMBER": PolicyDecision(PiiAction.TOKENIZE, needs_review=False),
-        "CUSTOMER_ID": PolicyDecision(PiiAction.HASH, needs_review=False),
-    }
-    customer_id = intended["CUSTOMER_ID"]
-    assert not any(
-        detection.entity_type == "US_DRIVER_LICENSE"
-        and detection.start < customer_id.end
-        and customer_id.start < detection.end
+    assert tuple(
+        (detection.entity_type, decide_policy(detection.entity_type, detection.score))
         for detection in detections
+    ) == (
+        ("PERSON", PolicyDecision(PiiAction.TOKENIZE, needs_review=False)),
+        ("EMAIL_ADDRESS", PolicyDecision(PiiAction.TOKENIZE, needs_review=False)),
+        ("PHONE_NUMBER", PolicyDecision(PiiAction.TOKENIZE, needs_review=False)),
+        ("CUSTOMER_ID", PolicyDecision(PiiAction.HASH, needs_review=False)),
     )
 
 
-def test_non_customer_ambiguous_overlaps_remain_fail_closed() -> None:
-    text = "Email alice.johnson@example.com."
+def test_email_suppresses_only_fully_contained_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = "alice@example.com and https://standalone.example"
+    standalone_start = text.index("https://")
+
+    class StubAnalyzer:
+        def analyze(self, *, text: str, language: str) -> list[RecognizerResult]:
+            assert text == "alice@example.com and https://standalone.example"
+            assert language == "en"
+            return [
+                RecognizerResult("EMAIL_ADDRESS", 0, 17, 0.60),
+                RecognizerResult("URL", 6, 17, 0.5),
+                RecognizerResult("URL", 0, 21, 0.5),
+                RecognizerResult("URL", 10, 21, 0.5),
+                RecognizerResult("URL", standalone_start, len(text), 0.5),
+                RecognizerResult("PERSON", 6, 10, 0.85),
+            ]
+
+    monkeypatch.setattr("fde_privacy.detector.get_analyzer", lambda: StubAnalyzer())
 
     detections = detect_pii(text)
-    email = next(
-        detection for detection in detections if detection.entity_type == "EMAIL_ADDRESS"
-    )
-    overlapping_urls = tuple(
-        detection
+
+    assert tuple(
+        (
+            detection.entity_type,
+            detection.start,
+            detection.end,
+            decide_policy(detection.entity_type, detection.score),
+        )
         for detection in detections
-        if detection.entity_type == "URL"
-        and detection.start < email.end
-        and email.start < detection.end
+    ) == (
+        ("EMAIL_ADDRESS", 0, 17, PolicyDecision(PiiAction.TOKENIZE, False)),
+        ("URL", 0, 21, PolicyDecision(PiiAction.BLOCK, True)),
+        ("PERSON", 6, 10, PolicyDecision(PiiAction.TOKENIZE, False)),
+        ("URL", 10, 21, PolicyDecision(PiiAction.BLOCK, True)),
+        ("URL", standalone_start, len(text), PolicyDecision(PiiAction.BLOCK, True)),
     )
 
-    assert overlapping_urls
+
+def test_low_confidence_email_does_not_own_contained_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = "alice@example.com"
+
+    class StubAnalyzer:
+        def analyze(self, *, text: str, language: str) -> list[RecognizerResult]:
+            assert text == "alice@example.com"
+            assert language == "en"
+            return [
+                RecognizerResult("EMAIL_ADDRESS", 0, 17, 0.599999),
+                RecognizerResult("URL", 6, 17, 0.5),
+            ]
+
+    monkeypatch.setattr("fde_privacy.detector.get_analyzer", lambda: StubAnalyzer())
+
+    detections = detect_pii(text)
+
+    assert tuple(detection.entity_type for detection in detections) == (
+        "EMAIL_ADDRESS",
+        "URL",
+    )
     assert all(
         decide_policy(detection.entity_type, detection.score)
-        == PolicyDecision(PiiAction.BLOCK, needs_review=True)
-        for detection in overlapping_urls
+        == PolicyDecision(PiiAction.BLOCK, True)
+        for detection in detections
     )
 
 
