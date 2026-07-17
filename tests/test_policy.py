@@ -1,4 +1,5 @@
 from dataclasses import FrozenInstanceError
+from math import inf, nan
 
 import pytest
 
@@ -113,3 +114,12 @@ def test_policy_decision_is_immutable() -> None:
 
     with pytest.raises(FrozenInstanceError):
         decision.needs_review = True  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("entity_type", ["PERSON", "CREDIT_CARD", "UNRECOGNIZED_SECRET"])
+@pytest.mark.parametrize("score", [nan, inf, -inf, -0.000001, 1.000001])
+def test_invalid_confidence_always_blocks_for_review(entity_type: str, score: float) -> None:
+    assert decide_policy(entity_type, score) == PolicyDecision(
+        action=PiiAction.BLOCK,
+        needs_review=True,
+    )

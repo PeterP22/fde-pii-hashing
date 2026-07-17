@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from math import isfinite
 from types import MappingProxyType
 from typing import Final
 
@@ -96,6 +97,9 @@ HIGH_RISK_ENTITIES: Final[frozenset[str]] = frozenset(
 
 def decide_policy(entity_type: str, score: float) -> PolicyDecision:
     """Choose an action, failing closed when confidence is below policy minimum."""
+
+    if not isfinite(score) or not 0 <= score <= 1:
+        return PolicyDecision(action=PiiAction.BLOCK, needs_review=True)
 
     threshold = (
         HIGH_RISK_MIN_CONFIDENCE

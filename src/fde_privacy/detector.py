@@ -2,10 +2,15 @@
 
 from dataclasses import dataclass
 from functools import cache
+from re import fullmatch
+from typing import Final
 
 from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer
 from presidio_analyzer.nlp_engine import NlpEngineProvider
 from presidio_analyzer.predefined_recognizers import AuTfnRecognizer
+
+CUSTOMER_ID_REGEX: Final = r"\bCUST-[0-9]{6}\b"
+CUSTOMER_ID_SCORE: Final = 0.95
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,8 +40,8 @@ def get_analyzer() -> AnalyzerEngine:
             patterns=[
                 Pattern(
                     name="customer-id",
-                    regex=r"\bCUST-[0-9]{6}\b",
-                    score=0.95,
+                    regex=CUSTOMER_ID_REGEX,
+                    score=CUSTOMER_ID_SCORE,
                 )
             ],
         )
@@ -48,7 +53,7 @@ def get_analyzer() -> AnalyzerEngine:
 def detect_pii(text: str) -> tuple[DetectedEntity, ...]:
     """Analyze text locally and return only entity type, offsets, and score."""
 
-    return tuple(
+    detections = tuple(
         DetectedEntity(
             entity_type=result.entity_type,
             start=result.start,
@@ -56,4 +61,31 @@ def detect_pii(text: str) -> tuple[DetectedEntity, ...]:
             score=result.score,
         )
         for result in get_analyzer().analyze(text=text, language="en")
+    )
+    owned_customer_ids = tuple(
+        detection
+        for detection in detections
+        if detection.entity_type == "CUSTOMER_ID"
+        and detection.score == CUSTOMER_ID_SCORE
+        and fullmatch(CUSTOMER_ID_REGEX, text[detection.start : detection.end]) is not None
+    )
+    arbitrated = (
+        detection
+        for detection in detections
+        if detection in owned_customer_ids
+        or not any(
+            detection.start < customer_id.end and customer_id.start < detection.end
+            for customer_id in owned_customer_ids
+        )
+    )
+    return tuple(
+        sorted(
+            arbitrated,
+            key=lambda detection: (
+                detection.start,
+                detection.end,
+                -detection.score,
+                detection.entity_type,
+            ),
+        )
     )
