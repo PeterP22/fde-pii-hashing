@@ -1,17 +1,17 @@
-# Presidio PII Learning Lab - Design Specification
+# FDE PII and Hashing - Design Specification
 
-Date: 2026-07-17  
-Repository: `PeterP22/presidio-pii-learning-lab`  
+Date: 2026-07-17
+Repository: `PeterP22/fde-pii-hashing`
 Status: Approved design, awaiting implementation planning
 
 ## 1. Purpose
 
-Build a public, runnable learning repository that explains and proves how to keep sensitive data out of an external LLM request.
+Build a public, runnable FDE learning repository that explains and proves how to keep sensitive data out of an external LLM request. The project is framed around the practical questions a forward deployed engineer should ask when connecting customer workflows, internal databases, privacy controls, and model providers.
 
 The repository has two connected learning paths:
 
-1. A PII transformation lab using Microsoft Presidio and LiteLLM.
-2. An automotive analytics lab that queries a private database locally, shows exact results directly to the authenticated user, and gives an LLM only an approved, reduced fact set for narrative generation.
+1. A PII transformation path using Microsoft Presidio and LiteLLM.
+2. An automotive analytics path that queries a private database locally, shows exact results directly to the authenticated user, and gives an LLM only an approved, reduced fact set for narrative generation.
 
 The project must make each trust boundary visible. A learner should be able to inspect the original input, Presidio detections, transformed model payload, model response, and locally composed final response without relying on a real external model.
 
@@ -54,7 +54,7 @@ The completed repository will demonstrate that:
 ## 5. Repository structure
 
 ```text
-presidio-pii-learning-lab/
+fde-pii-hashing/
 ├── README.md
 ├── pyproject.toml
 ├── uv.lock
@@ -65,7 +65,7 @@ presidio-pii-learning-lab/
 │   └── litellm.yaml
 ├── data/
 │   └── synthetic_automotive_sales.csv
-├── src/pii_lab/
+├── src/fde_privacy/
 │   ├── detect.py
 │   ├── hash_pii.py
 │   ├── token_vault.py
