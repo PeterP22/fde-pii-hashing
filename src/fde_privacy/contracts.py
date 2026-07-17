@@ -5,6 +5,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from fde_privacy.automotive.contracts import AutomotiveNarrativeFacts
+
 NonEmptyString = Annotated[str, Field(min_length=1)]
 
 
@@ -28,7 +30,7 @@ class InboundUserRequest(StrictModel):
 class SafeModelRequest(StrictModel):
     system_instruction: str = Field(min_length=1)
     safe_text: str = Field(min_length=1)
-    automotive_facts: None = None
+    automotive_facts: AutomotiveNarrativeFacts | None = None
 
 
 class SafeMessage(StrictModel):

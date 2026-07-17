@@ -7,6 +7,8 @@ import pytest
 from pydantic import ValidationError
 
 import fde_privacy.boundary as boundary_module
+from fde_privacy.automotive.analytics import derive_narrative_facts
+from fde_privacy.automotive.database import MonthlyTotal
 from fde_privacy.boundary import BoundaryViolation, SystemPromptId, build_safe_request
 from fde_privacy.contracts import SafeModelRequest
 from fde_privacy.detector import DetectedEntity
@@ -31,6 +33,15 @@ def safe_request_text() -> str:
     return (
         f"Customer {SAFE_TOKEN} had identifier {SAFE_HASH}; "
         "contact is <PHONE_NUMBER>. The vehicle needs routine service."
+    )
+
+
+def automotive_facts() -> object:
+    return derive_narrative_facts(
+        tuple(
+            MonthlyTotal(f"2025-{month:02d}", total)
+            for month, total in enumerate((8, 10, 9, 12, 12, 15, 11, 10, 13, 14, 16, 18), 1)
+        )
     )
 
 
@@ -825,6 +836,40 @@ def test_boundary_has_no_arbitrary_metadata_parameter_and_rejects_facts_dict() -
             system_prompt_id=SystemPromptId.AUTOMOTIVE_NARRATIVE,
             automotive_facts={"metadata": "secret"},  # type: ignore[arg-type]
         )
+
+
+def test_boundary_accepts_only_typed_closed_automotive_facts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(boundary_module, "detect_pii", lambda _: ())
+    facts = automotive_facts()
+
+    request = build_safe_request(
+        safe_text="Describe the approved qualitative automotive pattern.",
+        system_prompt_id=SystemPromptId.AUTOMOTIVE_NARRATIVE,
+        automotive_facts=facts,  # type: ignore[arg-type]
+        forbidden_exact_values=(8, 10, 9, 12, 15, 11, 13, 14, 16, 18),
+    )
+
+    assert request.automotive_facts is facts
+
+
+def test_recursive_inspection_rejects_exact_total_in_tampered_typed_facts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(boundary_module, "detect_pii", lambda _: ())
+    facts = automotive_facts()
+    tampered = facts.model_copy(update={"period_start": "148"})  # type: ignore[attr-defined]
+
+    with pytest.raises(BoundaryViolation, match="exact confidential value") as error:
+        build_safe_request(
+            safe_text="Describe the approved qualitative automotive pattern.",
+            system_prompt_id=SystemPromptId.AUTOMOTIVE_NARRATIVE,
+            automotive_facts=tampered,
+            forbidden_exact_values=(148,),
+        )
+
+    assert "148" not in "".join(format_exception(error.value))
 
 
 def test_built_request_is_immutable() -> None:

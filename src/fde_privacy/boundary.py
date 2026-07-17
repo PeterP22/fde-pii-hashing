@@ -11,6 +11,7 @@ from re import compile as compile_regex
 from types import MappingProxyType
 from typing import Final
 
+from fde_privacy.automotive.contracts import AutomotiveNarrativeFacts
 from fde_privacy.contracts import SafeModelRequest
 from fde_privacy.detector import DetectedEntity, detect_pii
 from fde_privacy.policy import PolicyDecision, decide_policy
@@ -136,7 +137,7 @@ def build_safe_request(
     *,
     safe_text: str,
     system_prompt_id: SystemPromptId,
-    automotive_facts: None = None,
+    automotive_facts: AutomotiveNarrativeFacts | None = None,
     forbidden_exact_values: Collection[str | int] = (),
 ) -> SafeModelRequest:
     """Build an immutable request only after local, fail-closed inspection."""
@@ -147,10 +148,20 @@ def build_safe_request(
         raise BoundaryViolation("safe text exceeds maximum length")
     if not isinstance(system_prompt_id, SystemPromptId):
         raise BoundaryViolation("system prompt must use a repository-owned identifier")
-    if automotive_facts is not None:
-        raise BoundaryViolation("automotive facts are not accepted by this boundary version")
+    if automotive_facts is not None and type(automotive_facts) is not AutomotiveNarrativeFacts:
+        raise BoundaryViolation("automotive facts must use the closed typed contract")
+    if (
+        automotive_facts is not None
+        and system_prompt_id is not SystemPromptId.AUTOMOTIVE_NARRATIVE
+    ):
+        raise BoundaryViolation("automotive facts require the automotive system prompt")
 
     exact_values = _normalize_exact_values(forbidden_exact_values)
+    if automotive_facts is not None:
+        facts_violation = _inspect_serialized(automotive_facts.model_dump(mode="json"), exact_values)
+        if facts_violation is not None:
+            kind, category = facts_violation
+            raise BoundaryViolation(f"automotive facts contain forbidden {kind}: {category}")
     protected_spans = _protected_spans(safe_text)
 
     detections = _run_detector(safe_text)
@@ -171,7 +182,7 @@ def build_safe_request(
         request = SafeModelRequest(
             system_instruction=SYSTEM_PROMPTS[system_prompt_id],
             safe_text=safe_text,
-            automotive_facts=None,
+            automotive_facts=automotive_facts,
         )
     except Exception:
         pass
