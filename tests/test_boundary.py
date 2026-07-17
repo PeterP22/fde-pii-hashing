@@ -510,6 +510,102 @@ def test_recursive_inspection_rejects_numeric_core_with_unmatched_wrapper(
     assert unmatched_total not in "".join(format_exception(error.value))
 
 
+@pytest.mark.parametrize("forbidden_total", [125000, -125000])
+@pytest.mark.parametrize(
+    "malformed_total",
+    [
+        "(125000",
+        "125000)",
+        ")125000(",
+        "--125000",
+        "+$+125000",
+        "-$-125000",
+        "$$125000",
+        "AUD AUD 125000",
+    ],
+)
+def test_malformed_numeric_candidate_matches_forbidden_absolute_magnitude(
+    forbidden_total: int,
+    malformed_total: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(boundary_module, "detect_pii", lambda _: ())
+
+    with pytest.raises(BoundaryViolation, match="exact confidential value") as error:
+        build_safe_request(
+            safe_text=f"Total {malformed_total}",
+            system_prompt_id=SystemPromptId.PII_SUMMARY,
+            forbidden_exact_values=(forbidden_total,),
+        )
+
+    assert malformed_total not in "".join(format_exception(error.value))
+
+
+@pytest.mark.parametrize("forbidden_total", [125000, -125000])
+@pytest.mark.parametrize(
+    "malformed_total",
+    [
+        "(125000",
+        "125000)",
+        ")125000(",
+        "--125000",
+        "+$+125000",
+        "-$-125000",
+        "$$125000",
+        "AUD AUD 125000",
+    ],
+)
+def test_recursive_inspection_blocks_malformed_numeric_absolute_magnitude(
+    forbidden_total: int,
+    malformed_total: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NestedSerializedRequest:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def model_dump(self, *, mode: str) -> dict[str, object]:
+            assert mode == "json"
+            return {"allowed": [{"content": f"Total {malformed_total}"}]}
+
+    monkeypatch.setattr(boundary_module, "detect_pii", lambda _: ())
+    monkeypatch.setattr(boundary_module, "SafeModelRequest", NestedSerializedRequest)
+
+    with pytest.raises(BoundaryViolation, match="exact confidential value") as error:
+        build_safe_request(
+            safe_text="ordinary safe words",
+            system_prompt_id=SystemPromptId.PII_SUMMARY,
+            forbidden_exact_values=(forbidden_total,),
+        )
+
+    assert malformed_total not in "".join(format_exception(error.value))
+
+
+@pytest.mark.parametrize(
+    ("forbidden_total", "valid_total"),
+    [
+        (125000, "-125000"),
+        (125000, "(125000)"),
+        (-125000, "125000"),
+        (-125000, "+$125000"),
+    ],
+)
+def test_well_formed_signed_numeric_candidates_keep_exact_sign_semantics(
+    forbidden_total: int,
+    valid_total: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(boundary_module, "detect_pii", lambda _: ())
+
+    request = build_safe_request(
+        safe_text=f"Total {valid_total}",
+        system_prompt_id=SystemPromptId.PII_SUMMARY,
+        forbidden_exact_values=(forbidden_total,),
+    )
+
+    assert request.safe_text == f"Total {valid_total}"
+
+
 @pytest.mark.parametrize("formatted_total", ["$125,000.00", "AUD 125,000", "125000.00"])
 def test_recursive_serialized_inspection_rejects_formatted_exact_totals(
     formatted_total: str,

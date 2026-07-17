@@ -92,6 +92,16 @@ _NUMERIC_TOKEN_PATTERN: Final[Pattern[str]] = compile_regex(
     r"(?P<number>(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?)"
     r"(?P<close>\))?(?![A-Za-z0-9_])"
 )
+_MALFORMED_NUMERIC_CANDIDATE_PATTERN: Final[Pattern[str]] = compile_regex(
+    r"(?<![A-Za-z0-9_])(?P<prefix>[()$+\- \t]*)"
+    r"(?P<number>(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?)"
+    r"(?P<suffix>[()$+\- \t]*)(?![A-Za-z0-9_])"
+)
+_REPEATED_CURRENCY_CODE_PATTERN: Final[Pattern[str]] = compile_regex(
+    r"(?<![A-Za-z0-9_])(?P<code>[A-Z]{3})(?:[ \t]+(?P=code))+[ \t]+[+$\- \t]*"
+    r"(?P<number>(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?)"
+    r"(?![A-Za-z0-9_])"
+)
 _NUMERIC_LITERAL_PATTERN: Final[Pattern[str]] = compile_regex(
     r"(?P<open>\()?(?P<sign_before>[+-])?"
     r"(?:(?:[A-Z]{3})[ \t]+)?\$?(?P<sign_after>[+-])?"
@@ -360,6 +370,30 @@ def _contains_exact_value(
 def _contains_forbidden_numeric_value(text: str, forbidden_values: frozenset[Decimal]) -> bool:
     if not forbidden_values:
         return False
+    forbidden_magnitudes = frozenset(abs(value) for value in forbidden_values)
+    for match in _MALFORMED_NUMERIC_CANDIDATE_PATTERN.finditer(text):
+        wrappers = match.group("prefix") + match.group("suffix")
+        parenthesis_depth = 0
+        has_unmatched_parentheses = False
+        for character in wrappers:
+            if character == "(":
+                parenthesis_depth += 1
+            elif character == ")":
+                if parenthesis_depth == 0:
+                    has_unmatched_parentheses = True
+                    break
+                parenthesis_depth -= 1
+        has_unmatched_parentheses = has_unmatched_parentheses or parenthesis_depth != 0
+        has_repeated_signs = wrappers.count("+") + wrappers.count("-") > 1
+        has_repeated_currency_markers = wrappers.count("$") > 1
+        if has_unmatched_parentheses or has_repeated_signs or has_repeated_currency_markers:
+            magnitude = Decimal(match.group("number").replace(",", ""))
+            if magnitude in forbidden_magnitudes:
+                return True
+    for match in _REPEATED_CURRENCY_CODE_PATTERN.finditer(text):
+        magnitude = Decimal(match.group("number").replace(",", ""))
+        if magnitude in forbidden_magnitudes:
+            return True
     for match in _NUMERIC_TOKEN_PATTERN.finditer(text):
         has_open_parenthesis = match.group("open") is not None
         has_close_parenthesis = match.group("close") is not None
