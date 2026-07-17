@@ -57,8 +57,9 @@
 - Missing any required month prevents `AutomotiveNarrativeFacts` construction and skips model narration.
 - Clean automotive data uses `data_quality_flags=(DataQualityFlag.NONE,)`; `NONE` never enables a model caveat.
 - Supply chain: Presidio 2.2.363's `cryptography<47` cap is temporarily overridden for the
-  patched range. Remove the override when Presidio supports patched cryptography; mask/hash
-  compatibility tests and the dependency audit must pass until then.
+  patched range. Task 1 verifies the patched cryptography version plus Presidio import and
+  initialization; Task 4 must verify masking/hash behavior before publication. Remove the
+  override when Presidio supports patched cryptography.
 
 ### Task 1: Bootstrap the safe Python project
 
@@ -108,7 +109,7 @@ dev = [
 
 [tool.uv]
 # Presidio 2.2.363 caps cryptography<47, conflicting with the GHSA-537c-gmf6-5ccf fix;
-# tests verify the required mask/hash behavior with the patched range.
+# Task 1 verifies version/import/initialization; Task 4 verifies masking/hash before publication.
 override-dependencies = ["cryptography>=48.0.1,<49"]
 
 [tool.pytest.ini_options]
