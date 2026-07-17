@@ -70,6 +70,9 @@ def test_gitleaks_job_scans_full_history_with_verified_binary() -> None:
     assert re.search(r"GITLEAKS_VERSION:\s*\"?\d+\.\d+\.\d+\"?", job)
     assert re.search(r"GITLEAKS_SHA256:\s*[0-9a-f]{64}", job)
     assert "sha256sum --check" in job
+    assert 'archive_name="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"' in job
+    assert "/${archive_name}" in job
+    assert "releases/download/v${GITLEAKS_VERSION}/${archive}" not in job
     assert 'gitleaks git --redact --verbose --log-opts="--all" .' in job
 
 

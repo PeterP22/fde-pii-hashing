@@ -197,6 +197,46 @@ def build_safe_request(
     return request
 
 
+def validate_safe_model_request(request: SafeModelRequest) -> SafeModelRequest:
+    """Re-run the boundary before any adapter serializes a request.
+
+    ``SafeModelRequest`` is a data contract, not proof that its caller used
+    :func:`build_safe_request`. Provider adapters call this function so direct
+    model construction cannot bypass local PII and confidentiality checks.
+    """
+
+    if type(request) is not SafeModelRequest:
+        raise BoundaryViolation("request must use the exact safe model contract")
+
+    prompt_id = next(
+        (
+            candidate
+            for candidate, instruction in SYSTEM_PROMPTS.items()
+            if instruction == request.system_instruction
+        ),
+        None,
+    )
+    if prompt_id is None:
+        raise BoundaryViolation("request system instruction is not repository owned")
+
+    if prompt_id is SystemPromptId.AUTOMOTIVE_NARRATIVE:
+        inspectable = _blank_spans(
+            request.safe_text,
+            (*_protected_spans(request.safe_text), *_month_spans(request.safe_text)),
+        )
+        if any(_NUMERIC_TOKEN_PATTERN.finditer(inspectable)):
+            raise BoundaryViolation("automotive request contains an exact numeric value")
+
+    rebuilt = build_safe_request(
+        safe_text=request.safe_text,
+        system_prompt_id=prompt_id,
+        automotive_facts=request.automotive_facts,
+    )
+    if rebuilt != request:
+        raise BoundaryViolation("request does not match the validated safe contract")
+    return request
+
+
 def _normalize_exact_values(values: Collection[str | int]) -> _ExactValues:
     normalized: tuple[object, ...] | None = None
     if isinstance(values, (str, bytes, bytearray)):

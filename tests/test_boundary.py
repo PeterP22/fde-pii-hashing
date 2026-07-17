@@ -948,3 +948,18 @@ def test_mock_adapter_rejects_safe_request_subclass_before_serialization() -> No
 
     assert adapter.last_payload is None
     assert fictional_secret not in "".join(format_exception(error.value))
+
+
+def test_mock_adapter_revalidates_direct_safe_request_before_capture() -> None:
+    fictional_secret = "alice@example.com"
+    request = SafeModelRequest(
+        system_instruction=boundary_module.SYSTEM_PROMPTS[SystemPromptId.PII_SUMMARY],
+        safe_text=fictional_secret,
+    )
+    adapter = CapturingMockAdapter()
+
+    with pytest.raises(BoundaryViolation) as error:
+        adapter.complete(request)
+
+    assert adapter.last_payload is None
+    assert fictional_secret not in "".join(format_exception(error.value))

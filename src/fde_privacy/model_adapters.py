@@ -9,6 +9,7 @@ from typing import Final, Protocol, runtime_checkable
 from urllib.parse import unquote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
+from fde_privacy.boundary import validate_safe_model_request
 from fde_privacy.contracts import SafeModelRequest
 
 _PROVIDER_TIMEOUT_SECONDS: Final = 5.0
@@ -72,6 +73,7 @@ class CapturingMockAdapter:
 
         if type(request) is not SafeModelRequest:
             raise TypeError("request must be a SafeModelRequest")
+        validate_safe_model_request(request)
         self.last_payload = request.model_dump_json()
         return request.safe_text if self._response is None else self._response
 
@@ -132,6 +134,7 @@ class LiteLLMAdapter:
 
         if type(request) is not SafeModelRequest:
             raise TypeError("request must be a SafeModelRequest")
+        validate_safe_model_request(request)
 
         messages: list[dict[str, str]] = [
             {"role": "system", "content": request.system_instruction},

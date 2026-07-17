@@ -5,6 +5,7 @@ from traceback import format_exception
 
 import pytest
 
+from fde_privacy.boundary import BoundaryViolation, SystemPromptId, build_safe_request
 from fde_privacy.contracts import InboundUserRequest, SafeModelRequest, SessionContext
 from fde_privacy.model_adapters import (
     LiteLLMAdapter,
@@ -50,9 +51,9 @@ def _enable(
 
 
 def _safe_request() -> SafeModelRequest:
-    return SafeModelRequest(
-        system_instruction="Use only transformed values and approved facts.",
+    return build_safe_request(
         safe_text="Summarize account {{PERSON:abcdefghijklmnopqrstuvwx}} without exact totals.",
+        system_prompt_id=SystemPromptId.PII_SUMMARY,
     )
 
 
@@ -239,6 +240,38 @@ def test_provider_rejects_arbitrary_inbound_and_subclass_requests(
             adapter.complete(unsafe)  # type: ignore[arg-type]
 
     assert transport.calls == []
+
+
+@pytest.mark.parametrize(
+    ("system_instruction", "safe_text"),
+    [
+        (
+            "Summarize only the transformed user text. Do not infer or reconstruct protected values.",
+            "alice.johnson@example.com exact total 987654321",
+        ),
+        (
+            "Write an automotive narrative using only the transformed user text and approved facts.",
+            "Summarize exact total 987654321",
+        ),
+    ],
+)
+def test_provider_revalidates_directly_constructed_safe_requests(
+    system_instruction: str,
+    safe_text: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = FakeTransport(_response())
+    _enable(monkeypatch)
+    adapter = LiteLLMAdapter.from_environment(transport=transport)
+    request = SafeModelRequest(system_instruction=system_instruction, safe_text=safe_text)
+
+    with pytest.raises(BoundaryViolation) as error:
+        adapter.complete(request)
+
+    assert transport.calls == []
+    formatted = "".join(format_exception(error.value))
+    assert "alice.johnson@example.com" not in formatted
+    assert "987654321" not in formatted
 
 
 @pytest.mark.parametrize(
