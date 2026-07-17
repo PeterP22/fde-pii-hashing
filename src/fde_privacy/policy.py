@@ -29,7 +29,6 @@ DEFAULT_ACTIONS: Final[Mapping[str, PiiAction]] = MappingProxyType(
         "EMAIL_ADDRESS": PiiAction.TOKENIZE,
         "PHONE_NUMBER": PiiAction.TOKENIZE,
         "CUSTOMER_ID": PiiAction.HASH,
-        "LOCATION": PiiAction.MASK,
     }
 )
 

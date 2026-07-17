@@ -12,11 +12,10 @@ from fde_privacy.policy import PiiAction, PolicyDecision, decide_policy
         ("EMAIL_ADDRESS", PiiAction.TOKENIZE),
         ("PHONE_NUMBER", PiiAction.TOKENIZE),
         ("CUSTOMER_ID", PiiAction.HASH),
-        ("LOCATION", PiiAction.MASK),
         ("CREDIT_CARD", PiiAction.BLOCK),
     ],
 )
-def test_default_policy_covers_every_action(
+def test_default_policy_assigns_only_listed_actions(
     entity_type: str, expected_action: PiiAction
 ) -> None:
     decision = decide_policy(entity_type, score=0.95)
@@ -70,6 +69,13 @@ def test_high_risk_entities_are_blocked(entity_type: str) -> None:
 
 def test_unknown_entities_fail_closed() -> None:
     assert decide_policy("UNRECOGNIZED_SECRET", score=0.95) == PolicyDecision(
+        action=PiiAction.BLOCK,
+        needs_review=False,
+    )
+
+
+def test_unlisted_location_fails_closed() -> None:
+    assert decide_policy("LOCATION", score=0.95) == PolicyDecision(
         action=PiiAction.BLOCK,
         needs_review=False,
     )
