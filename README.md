@@ -1,5 +1,7 @@
 # fde-pii-hashing
 
+> **Why it matters:** the hard part of putting models inside a real business is not the model, it's the trust boundary. This repo shows, stage by stage, what crosses it and what never does. Runs offline with a mock model and synthetic data.
+
 An FDE learning repository for a common deployment problem: users need useful model-assisted
 answers, but raw PII, database rows, exact commercial measures, SQL, and infrastructure details
 must not cross the first-party trust boundary. The code makes every stage inspectable and uses a
@@ -246,3 +248,7 @@ Implementation references: [Presidio anonymizer](https://data-privacy-stack.gith
 For the module-by-module walkthrough, read [What we are achieving](docs/what-we-are-achieving.md).
 For assets, threats, controls, and production replacements, read
 [Threat model](docs/threat-model.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
