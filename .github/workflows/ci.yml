@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - run: uv sync --locked --all-groups
+      - run: uv run ruff check .
+      - run: uv run mypy src
+      - name: Unit and adversarial leak tests
+        run: uv run pytest -m "not integration" --cov=src/fde_privacy --cov-report=term
+      - name: Leak eval (fails if any raw PII reaches the provider payload)
+        run: |
+          uv run python -m fde_privacy.leak_eval --people 50 --out /tmp/leak.json --chart /tmp/leak.svg
+          python3 -c "import json,sys; p=json.load(open('/tmp/leak.json'))['pipelines'][1]; sys.exit(p['leak_rate'] > 0 or p['log_leaks'] > 0)"
+      - run: uv run pip-audit

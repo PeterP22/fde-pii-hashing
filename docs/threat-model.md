@@ -69,7 +69,7 @@ worker after the request, and use an architecture/runtime designed for verifiabl
 
 - Presidio 2.2.363 declares `cryptography<47`, while
   [GHSA-537c-gmf6-5ccf](https://github.com/advisories/GHSA-537c-gmf6-5ccf) is patched in cryptography
-  48.0.1. Therefore ordinary pip/wheel install is unsupported; the deliberate uv override selects the
+  48.0.1, and PYSEC-2026-3552/3553/3554 in cryptography 50.0.2. Therefore ordinary pip/wheel install is unsupported; the deliberate uv override selects the
   patched version and is covered by Presidio initialization and transformation tests. Remove the uv
   override when upstream supports the patched range.
 - pytest is constrained above the patched floor for
