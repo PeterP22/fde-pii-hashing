@@ -3,17 +3,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
+GUIDE = ROOT / "docs" / "guide.md"
 ACHIEVEMENT_DOC = ROOT / "docs" / "what-we-are-achieving.md"
 THREAT_MODEL = ROOT / "docs" / "threat-model.md"
-DOCS = (README, ACHIEVEMENT_DOC, THREAT_MODEL)
+DOCS = (README, GUIDE, ACHIEVEMENT_DOC, THREAT_MODEL)
 
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_readme_has_required_learning_headings() -> None:
-    readme = _read(README)
+def test_guide_has_required_learning_headings() -> None:
+    readme = _read(GUIDE)
     headings = (
         "What the LLM sees",
         "Masking vs hashing vs tokenization",
@@ -29,8 +30,8 @@ def test_readme_has_required_learning_headings() -> None:
         assert re.search(rf"^#+ {re.escape(heading)}$", readme, re.MULTILINE)
 
 
-def test_readme_documents_runnable_paths_and_provider_gate() -> None:
-    readme = _read(README)
+def test_guide_documents_runnable_paths_and_provider_gate() -> None:
+    readme = _read(GUIDE)
     commands = (
         "uv sync",
         "uv run python -m fde_privacy.pii_demo",
@@ -87,7 +88,10 @@ def test_docs_do_not_describe_the_project_as_a_lab_or_expose_local_paths_or_secr
 
 def test_docs_links_and_relative_paths_resolve() -> None:
     readme = _read(README)
-    assert "[What we are achieving](docs/what-we-are-achieving.md)" in readme
-    assert "[Threat model](docs/threat-model.md)" in readme
+    guide = _read(GUIDE)
+    assert "[guide](docs/guide.md)" in readme
+    assert "[threat model](docs/threat-model.md)" in readme
+    assert "[What we are achieving](what-we-are-achieving.md)" in guide
+    assert "[Threat model](threat-model.md)" in guide
     assert ACHIEVEMENT_DOC.is_file()
     assert THREAT_MODEL.is_file()

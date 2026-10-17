@@ -1,0 +1,58 @@
+{
+  "seed": 20261017,
+  "people": 200,
+  "requests": 400,
+  "attacker_dictionary_size": 1002373,
+  "detection_seconds": 2.509,
+  "log_records_scanned": 28107,
+  "fde_block_reasons": {
+    "local privacy detection returned invalid metadata": 152,
+    "model adapter failed safely": 10,
+    "privacy policy blocked the request": 88,
+    "request contains disallowed entity type: PERSON": 5,
+    "request contains forbidden entity type: PHONE_NUMBER": 17
+  },
+  "pipelines": [
+    {
+      "name": "naive_sha256",
+      "requests": 400,
+      "blocked": 0,
+      "pii_values": 1600,
+      "raw_leaks": 48,
+      "dictionary_reidentified": 1458,
+      "linkable_pairs": 200,
+      "customer_pairs": 200,
+      "salt_known_recovered": 0,
+      "hashed_customer_ids": 0,
+      "log_leaks": 0,
+      "served_rate": 1.0,
+      "leak_rate": 0.94125,
+      "linkage_rate": 1.0,
+      "seconds": 0.0020754390006914036,
+      "leaked_types": {
+        "PERSON": 388,
+        "EMAIL_ADDRESS": 392,
+        "PHONE_NUMBER": 391,
+        "CUSTOMER_ID": 335
+      }
+    },
+    {
+      "name": "fde_boundary",
+      "requests": 400,
+      "blocked": 272,
+      "pii_values": 1600,
+      "raw_leaks": 0,
+      "dictionary_reidentified": 0,
+      "linkable_pairs": 24,
+      "customer_pairs": 24,
+      "salt_known_recovered": 128,
+      "hashed_customer_ids": 128,
+      "log_leaks": 0,
+      "served_rate": 0.32,
+      "leak_rate": 0.0,
+      "linkage_rate": 1.0,
+      "seconds": 3.15607420500055,
+      "leaked_types": {}
+    }
+  ]
+}
