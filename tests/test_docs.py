@@ -59,7 +59,7 @@ def test_docs_include_required_security_warnings() -> None:
         "ordinary pip/wheel install is unsupported",
         "Presidio 2.2.363",
         "cryptography<47",
-        "cryptography 48.0.1",
+        "cryptography 50.0.2",
         "uv override",
         "false negatives",
         "process isolation",

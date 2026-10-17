@@ -13,4 +13,4 @@ def test_presidio_anonymizer_uses_patched_cryptography() -> None:
     cryptography_version = tuple(int(part) for part in version("cryptography").split("."))
 
     assert isinstance(engine, AnonymizerEngine)
-    assert cryptography_version >= (48, 0, 1)
+    assert cryptography_version >= (50, 0, 2)

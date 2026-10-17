@@ -25,7 +25,7 @@ dev = [
 
 [tool.uv]
 # GHSA-537c-gmf6-5ccf: this hash/mask-only lab smoke-tests Presidio with the patched release.
-override-dependencies = ["cryptography>=48.0.1,<49"]
+override-dependencies = ["cryptography>=50.0.0,<51"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fde_privacy"]

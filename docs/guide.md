@@ -56,7 +56,7 @@ model-facing payload, and the final locally composed response. The automotive co
 local database result, reduced facts, model payload, and exact final response.
 
 Important dependency constraint: ordinary pip/wheel install is unsupported while Presidio
-2.2.363's `cryptography<47` metadata conflicts with patched cryptography 48.0.1. The uv override in
+2.2.363's `cryptography<47` metadata conflicts with patched cryptography 50.0.2. The uv override in
 `pyproject.toml` is deliberate, and the lock plus tests prove the supported combination. Remove the
 uv override when upstream Presidio supports the patched range.
 

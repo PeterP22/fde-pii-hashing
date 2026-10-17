@@ -147,7 +147,7 @@ narrow language task.
 ## Dependency and runtime choices
 
 uv is canonical. An ordinary pip/wheel install is unsupported while Presidio 2.2.363 declares
-`cryptography<47` but the patched dependency is cryptography 48.0.1. The deliberate uv override is
+`cryptography<47` but the patched dependency is cryptography 50.0.2. The deliberate uv override is
 verified by import, initialization, mask/hash, and test coverage; remove it when Presidio supports
 the patched range.
 
